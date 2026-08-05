@@ -1,0 +1,66 @@
+# Shared figure style for every figure in main.ipynb. Load it with:
+#     import matplotlib.pyplot as plt
+#     plt.style.use(config.STYLE_FILE)
+#
+# Sizes assume a figure saved at the report's text width (about 6.5 in), so
+# 10 pt text prints about as large as the 11 pt captions. Don't shrink figures
+# in LaTeX below that width, or the text gets smaller than the captions.
+#
+# Colours:
+#   Lines and bars use the categorical cycle below, always in this order.
+#   Series 1-3 (e.g. treated, ring, control) stay distinguishable with colour
+#   blindness, so figures with 3 or fewer series need nothing else.
+#   With 4 or more, also label the lines directly or use different line styles.
+#   Maps and heatmaps of change use a diverging scale centred at 0:
+#   blue (fall) - light grey (no change) - red (rise), e.g. cmap "RdBu_r"
+#   with matplotlib.colors.TwoSlopeNorm(vcenter=0).
+
+# Figure size and output
+figure.figsize: 6.5, 3.5
+figure.dpi: 110
+figure.facecolor: white
+savefig.dpi: 300
+savefig.bbox: tight
+savefig.pad_inches: 0.05
+savefig.format: pdf
+pdf.fonttype: 42
+
+# Text
+font.family: sans-serif
+font.sans-serif: DejaVu Sans, Helvetica, Arial
+font.size: 10
+axes.titlesize: 11
+axes.titleweight: bold
+axes.titlelocation: left
+axes.labelsize: 10
+xtick.labelsize: 9
+ytick.labelsize: 9
+legend.fontsize: 9
+legend.title_fontsize: 9
+figure.titlesize: 12
+
+# Colours (categorical order: blue, orange, aqua, yellow, magenta, green, violet, red)
+axes.prop_cycle: cycler("color", ["2a78d6", "eb6834", "1baf7a", "eda100", "e87ba4", "008300", "4a3aa7", "e34948"])
+text.color: 0b0b0b
+axes.labelcolor: 52514e
+xtick.color: 52514e
+ytick.color: 52514e
+axes.edgecolor: c3c2b7
+
+# Axes and grid: light, so the data stands out
+axes.spines.top: False
+axes.spines.right: False
+axes.linewidth: 0.8
+axes.grid: True
+axes.grid.axis: y
+axes.axisbelow: True
+grid.color: e1e0d9
+grid.linewidth: 0.6
+
+# Lines and markers
+lines.linewidth: 1.6
+lines.markersize: 5
+patch.linewidth: 0
+
+# Legend
+legend.frameon: False

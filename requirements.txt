@@ -1,0 +1,29 @@
+# Python 3.12. PySpark also needs Java 17 or 21 (see README.md).
+
+# Data processing
+pyspark==4.2.0
+# pandas 2.x because PySpark 4.2 does not fully support pandas 3 yet
+pandas==2.3.3
+numpy==2.5.3
+pyarrow==25.0.1
+requests==2.34.2
+
+# Maps and spatial joins
+geopandas==1.1.4
+
+# Plots
+matplotlib==3.11.2
+
+# Models
+statsmodels==0.15.0
+pyfixest==0.60.0
+lightgbm==4.7.0
+shap==0.52.0
+
+# Notebooks
+jupyterlab==4.6.3
+ipykernel==7.3.0
+
+# Code style checks
+flake8==7.3.0
+nbqa==1.9.1
