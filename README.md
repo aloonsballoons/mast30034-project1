@@ -15,6 +15,7 @@ Timeline: January 2023 to December 2025 (24 months before the toll, 12 months af
 | `main.ipynb` | The whole pipeline, from download to models. Run it top to bottom. |
 | `scripts/` | Functions the notebook imports (downloading, cleaning, plotting, models) |
 | `scripts/config.py` | Shared settings: date range, folders, `QUICK_RUN` flag |
+| `scripts/download.py` | Downloads the TLC trip data and external datasets |
 | `scripts/style.mplstyle` | Shared figure style used by every figure |
 | `plots/` | Figures saved by the notebook |
 | `report/` | LaTeX report (`main.tex`, `references.bib`) |
@@ -38,7 +39,7 @@ Timeline: January 2023 to December 2025 (24 months before the toll, 12 months af
   brew install libomp
   ```
 
-- **LaTeX** (only to build the report): a TeX distribution with `biblatex`, `biber` and `lipsum`, for example MacTeX. With TinyTeX, run `tlmgr install lipsum biber`.
+- **LaTeX** (only to build the report): a TeX distribution with `biblatex`, `biber`, `lipsum` and `mwe`, for example MacTeX. With TinyTeX, run `tlmgr install lipsum biber mwe`.
 
 ### 2. Create a virtual environment and install the packages
 
@@ -72,15 +73,15 @@ The notebook then uses only January and March of 2024 and 2025. Setting `QUICK_R
 
 ### What the notebook does
 
-The notebook is still being built. Its sections follow `PROJECT_PLAN.md`, and run times will be added as each section is finished.
+The notebook is still being built. Run times will be added as each section is finished.
 
-1. Download the TLC trip data and external datasets into `data/raw/` (Step 2)
-2. Prepare the external data: CBD zone labels, buffer ring, subway, weather, holidays (Step 4)
-3. Clean the taxi data with PySpark and build the summary table in `data/curated/` (Step 3)
-4. Explore the data and make maps (Step 5)
-5. Fit the models: difference-in-differences and LightGBM (Step 6)
+1. Download the TLC trip data and external datasets into `data/raw/`
+2. Prepare the external data: CBD zone labels, buffer ring, subway, weather, holidays
+3. Clean the taxi data with PySpark and build the summary table in `data/curated/`
+4. Explore the data and make maps
+5. Fit the models: difference-in-differences and LightGBM
 
-Step 4 comes before Step 3 because the cleaning step needs the zone labels. The report is built separately from `report/main.tex`.
+The external data is prepared before the taxi data is cleaned, because the cleaning step needs the zone labels. The report is built separately from `report/main.tex`.
 
 ## Code style
 
