@@ -291,6 +291,51 @@ def download_tlc(months, services=None):
     return [tlc_path(*job) for job in jobs]
 
 
+def split_large_row_groups(paths, rows_per_group=1_048_576,
+                           max_group_mb=200):
+    """Rewrite TLC files whose row groups are too big for Spark to split.
+
+    HVFHV January to July 2023 each store the whole month (about 20 million
+    rows, 820-935 MB uncompressed) in a single row group. Spark can't split
+    a row group, so one task has to hold the whole file, and a few of those
+    at once ran Spark out of memory. Later files use row groups of
+    1,048,576 rows. This rewrites the large ones with the same row group
+    size, the same schema and zstd compression, checks that the rows and
+    schema match, and only then replaces the original.
+
+    Args:
+        paths (list of Path): TLC parquet files.
+        rows_per_group (int): Rows per row group in the rewritten file.
+        max_group_mb (float): Rewrite files with any row group larger than
+            this (uncompressed).
+
+    Returns:
+        list of str: Names of the files that were rewritten.
+    """
+    rewritten = []
+    for path in paths:
+        meta = pq.read_metadata(path)
+        largest = max(meta.row_group(i).total_byte_size
+                      for i in range(meta.num_row_groups))
+        if largest <= max_group_mb * 1e6:
+            continue
+        table = pq.read_table(path)
+        part = path.with_name(path.name + ".part")
+        pq.write_table(table, part, row_group_size=rows_per_group,
+                       compression="zstd")
+        new_meta = pq.read_metadata(part)
+        if (new_meta.num_rows != meta.num_rows
+                or not pq.read_schema(part).equals(table.schema)):
+            part.unlink()
+            raise ValueError(f"{path.name}: rewritten file doesn't match")
+        del table
+        part.replace(path)
+        rewritten.append(path.name)
+        print(f"  {path.name}: {meta.num_rows:,} rows, 1 row group -> "
+              f"{new_meta.num_row_groups}")
+    return rewritten
+
+
 def parquet_shapes(paths):
     """Read rows x columns of parquet files from their metadata only.
 
