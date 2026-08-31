@@ -55,7 +55,24 @@ TIME_BANDS = [
     ("evening", 16, 21),       # 16:00-20:59
 ]
 TIME_BAND_ORDER = [band for band, _, _ in TIME_BANDS]
-ZONE_GROUPS = ["cbd", "ring", "control"]
+
+# Zone groups (``zone_group_fine`` in the zone labels), in the order that
+# decides a trip's group: each trip takes the first group either end falls
+# in. Both the Spark rule (``add_columns``) and the pandas rule
+# (``build_summary``) follow this order.
+ZONE_GROUPS = ["cbd", "ring_adjacent", "ring_across", "control_near",
+               "control_far"]
+# The trip group each zone group gives. Trips touching the CBD are treated
+TRIP_GROUPS = {"cbd": "treated", "ring_adjacent": "ring_adjacent",
+               "ring_across": "ring_across", "control_near": "control_near",
+               "control_far": "control_far"}
+# Back to the three groups of Step 3: zone groups, then trip groups
+COARSE = {"cbd": "cbd", "ring_adjacent": "ring", "ring_across": "ring",
+          "control_near": "control", "control_far": "control"}
+TRIP_COARSE = {"treated": "treated", "ring_adjacent": "ring",
+               "ring_across": "ring", "control_near": "control",
+               "control_far": "control"}
+COARSE_TRIP_GROUPS = ["treated", "ring", "control"]
 
 SUMMARY_FILE = config.CURATED_DIR / "trip_summary.parquet"
 PARTS_DIR = config.CURATED_DIR / "summary_parts"
@@ -555,8 +572,11 @@ def add_columns(data, service, spark, labels):
     ``fare_amount`` plus the driver's part of ``extra``; null when that
     can't be worked out), ``earnings`` (``revenue`` for yellow,
     ``driver_pay`` for HVFHV), ``earnings_per_engaged_hour``,
-    ``pickup_group``, ``dropoff_group``, ``trip_group``, ``after_toll``,
-    ``date``, ``hour``, ``time_band`` and ``day_of_week`` (1 = Monday).
+    ``pickup_group`` and ``dropoff_group`` (one of ``ZONE_GROUPS``),
+    ``trip_group`` (the first of ``ZONE_GROUPS`` either end falls in, named
+    by ``TRIP_GROUPS``), ``trip_group_coarse`` (``treated``, ``ring`` or
+    ``control``), ``after_toll``, ``date``, ``hour``, ``time_band`` and
+    ``day_of_week`` (1 = Monday).
 
     Earnings per engaged hour is left null for shared HVFHV rides
     (``shared_match_flag`` = Y), because two trips share the same driving
@@ -588,7 +608,9 @@ def add_columns(data, service, spark, labels):
         F.when(~shared, F.try_divide(F.col("earnings"), F.col("trip_hours"))))
 
     groups = spark.createDataFrame(
-        labels.loc[labels["zone_group"].notna(), ["LocationID", "zone_group"]]
+        labels.loc[labels["zone_group_fine"].notna(),
+                   ["LocationID", "zone_group_fine"]]
+        .rename(columns={"zone_group_fine": "zone_group"})
         .astype({"LocationID": "int32"}))
     groups = F.broadcast(groups)
     data = (data
@@ -598,12 +620,15 @@ def add_columns(data, service, spark, labels):
             .join(groups.withColumnsRenamed({"LocationID": "DOLocationID",
                                              "zone_group": "dropoff_group"}),
                   "DOLocationID"))
-    either = (lambda group: (F.col("pickup_group") == group)
-              | (F.col("dropoff_group") == group))
-    data = data.withColumn(
-        "trip_group",
-        F.when(either("cbd"), "treated").when(either("ring"), "ring")
-        .otherwise("control"))
+    trip_group = F
+    for group in ZONE_GROUPS:
+        either = ((F.col("pickup_group") == group)
+                  | (F.col("dropoff_group") == group))
+        trip_group = trip_group.when(either, TRIP_GROUPS[group])
+    coarse = F.create_map(*[F.lit(v) for pair in TRIP_COARSE.items()
+                            for v in pair])
+    data = (data.withColumn("trip_group", trip_group)
+            .withColumn("trip_group_coarse", coarse[F.col("trip_group")]))
 
     toll_start = config.TOLL_START_DATE.isoformat()
     return (data
@@ -623,14 +648,16 @@ def earnings_coverage(trips):
         trips (pyspark.sql.DataFrame): Output of ``add_columns``.
 
     Returns:
-        pandas.DataFrame: Rows are years, columns trip groups, values the
-        share of trips (%) whose ``earnings_per_engaged_hour`` is not null.
+        pandas.DataFrame: Rows are years, columns coarse trip groups, values
+        the share of trips (%) whose ``earnings_per_engaged_hour`` is not
+        null.
     """
-    table = trips.groupBy(F.year("date").alias("year"), "trip_group").agg(
+    table = trips.groupBy(F.year("date").alias("year"),
+                          "trip_group_coarse").agg(
         (F.count("earnings_per_engaged_hour") / F.count("*") * 100)
         .alias("known_pct")).toPandas()
-    return table.pivot(index="year", columns="trip_group",
-                       values="known_pct")[["treated", "ring", "control"]]
+    return table.pivot(index="year", columns="trip_group_coarse",
+                       values="known_pct")[COARSE_TRIP_GROUPS]
 
 
 def flex_fare_by_group(yellow):
@@ -643,14 +670,15 @@ def flex_fare_by_group(yellow):
         yellow (pyspark.sql.DataFrame): Output of ``add_columns`` (yellow).
 
     Returns:
-        pandas.DataFrame: Rows are years, columns trip groups, values the
-        Flex Fare share of trips in %.
+        pandas.DataFrame: Rows are years, columns coarse trip groups, values
+        the Flex Fare share of trips in %.
     """
-    table = yellow.groupBy(F.year("date").alias("year"), "trip_group").agg(
+    table = yellow.groupBy(F.year("date").alias("year"),
+                           "trip_group_coarse").agg(
         F.avg((F.col("payment_type") == FLEX_FARE).cast("int") * 100)
         .alias("flex_fare_pct")).toPandas()
-    return table.pivot(index="year", columns="trip_group",
-                       values="flex_fare_pct")[["treated", "ring", "control"]]
+    return table.pivot(index="year", columns="trip_group_coarse",
+                       values="flex_fare_pct")[COARSE_TRIP_GROUPS]
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +719,8 @@ def summarise_month(spark, service, year, month, labels, overwrite=False):
     Months are independent (every summary row has one date), so doing one
     month at a time keeps Spark's memory use small. Each month is saved to
     ``data/curated/summary_parts/`` and reused on the next run unless
-    ``overwrite`` is true.
+    ``overwrite`` is true, or its drop-off groups aren't all in
+    ``ZONE_GROUPS`` (a part saved before the zone groups changed).
 
     Args:
         spark (SparkSession): Active session.
@@ -708,7 +737,10 @@ def summarise_month(spark, service, year, month, labels, overwrite=False):
 
     path = PARTS_DIR / f"{service}_{year}-{month:02d}.parquet"
     if path.exists() and not overwrite:
-        return pd.read_parquet(path)
+        table = pd.read_parquet(path)
+        if table["dropoff_group"].isin(ZONE_GROUPS).all():
+            return table
+        print(f"Rebuilding {path.name}: saved with other zone groups")
     trips = add_trip_time(read_month(spark, service, year, month), service)
     trips = add_columns(clean(trips, service), service, spark, labels)
     table = summarise(trips, service).toPandas()
@@ -745,14 +777,14 @@ def build_summary(spark, labels, months, services=("yellow", "fhvhv"),
     found = pd.concat(parts, ignore_index=True)
     found["date"] = pd.to_datetime(found["date"]).dt.date
 
-    zones = labels.loc[labels["zone_group"].notna(),
-                       ["LocationID", "zone_group"]]
+    zones = labels.loc[labels["zone_group_fine"].notna(),
+                       ["LocationID", "zone_group_fine"]]
     dates = pd.concat([pd.Series(pd.date_range(
         f"{year}-{month:02d}-01", periods=pd.Period(
             f"{year}-{month:02d}").days_in_month)) for year, month in months])
     grid = (pd.DataFrame({"service": list(services)})
             .merge(zones.rename(columns={"LocationID": "PULocationID",
-                                         "zone_group": "pickup_group"}),
+                                         "zone_group_fine": "pickup_group"}),
                    how="cross")
             .merge(pd.DataFrame({"dropoff_group": ZONE_GROUPS}), how="cross")
             .merge(pd.DataFrame({"date": dates.dt.date}), how="cross")
@@ -766,11 +798,14 @@ def build_summary(spark, labels, months, services=("yellow", "fhvhv"),
     table[["trips", "trips_with_earnings"]] = (
         table[["trips", "trips_with_earnings"]].astype("int64"))
 
-    either = (lambda group: (table["pickup_group"] == group)
-              | (table["dropoff_group"] == group))
-    table["trip_group"] = "control"
-    table.loc[either("ring"), "trip_group"] = "ring"
-    table.loc[either("cbd"), "trip_group"] = "treated"
+    # Same rule as add_columns: the first of ZONE_GROUPS either end is in.
+    # Going through them in reverse lets the earlier groups overwrite
+    for group in reversed(ZONE_GROUPS):
+        either = ((table["pickup_group"] == group)
+                  | (table["dropoff_group"] == group))
+        table.loc[either, "trip_group"] = TRIP_GROUPS[group]
+    assert table["trip_group"].notna().all(), "a row got no trip group"
+    table["trip_group_coarse"] = table["trip_group"].map(TRIP_COARSE)
     table["date"] = pd.to_datetime(table["date"])
     table["after_toll"] = table["date"] >= pd.Timestamp(config.TOLL_START_DATE)
     table["day_of_week"] = table["date"].dt.dayofweek + 1

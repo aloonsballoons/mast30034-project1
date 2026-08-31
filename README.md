@@ -14,7 +14,7 @@ MAST30034-Project1/
 ├── scripts/                The functions main.ipynb imports, in pipeline order
 │   ├── config.py           Shared settings: date range, folders, QUICK_RUN flag
 │   ├── download.py         Downloads the TLC trip data and external datasets
-│   ├── zones.py            Labels every taxi zone as cbd, ring or control
+│   ├── zones.py            Labels every taxi zone as cbd, ring or control (and a finer 5-level group)
 │   ├── spark_io.py         Starts Spark, reads the monthly TLC files into one schema
 │   ├── clean.py            Data checks, cleaning rules, new columns, summary table
 │   ├── external.py         Subway by zone, weather, holidays, and the joins

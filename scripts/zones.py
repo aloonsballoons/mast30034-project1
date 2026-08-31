@@ -1,4 +1,4 @@
-"""Label every taxi zone as ``cbd``, ``ring`` or ``control``.
+"""Label every taxi zone as ``cbd``, ``ring`` or ``control``, and finer.
 
 - ``cbd``: one of the 38 zones on the MTA's list of zones inside the
   congestion relief zone.
@@ -6,6 +6,14 @@
   of it. The distance catches zones across the rivers, such as Long Island
   City and Downtown Brooklyn.
 - ``control``: every other zone.
+
+``zone_group_fine`` splits the ring and the control group in two:
+
+- ``ring_adjacent``: ring zones that touch the CBD (distance 0), all in
+  Manhattan.
+- ``ring_across``: ring zones reached across water (distance > 0).
+- ``control_near``: control zones within ``NEAR_DISTANCE_FT`` of the CBD.
+- ``control_far``: every other control zone.
 
 The labels are built before the taxi data is cleaned, because the cleaning
 step uses them to give each trip a group.
@@ -18,6 +26,8 @@ from scripts import config
 
 # About 1 km. The shapefile is in EPSG:2263 (NY State Plane), measured in feet
 RING_DISTANCE_FT = 3281
+# About 2 km. Control zones this close to the CBD are ``control_near``
+NEAR_DISTANCE_FT = 6562
 
 LABELS_FILE = config.CURATED_DIR / "zone_labels.csv"
 
@@ -68,8 +78,9 @@ def build_zone_labels():
     Returns:
         pandas.DataFrame: One row per zone in the lookup table (1-265) with
         ``LocationID``, ``Borough``, ``Zone``, ``in_cbd``,
-        ``distance_to_cbd_ft`` and ``zone_group``. Zones 264 and 265
-        (unknown and outside NYC) have no shape, so their group is missing.
+        ``distance_to_cbd_ft``, ``zone_group`` and ``zone_group_fine``.
+        Zones 264 and 265 (unknown and outside NYC) have no shape, so their
+        groups are missing.
     """
     lookup = pd.read_csv(config.RAW_DIR / "taxi_zones"
                          / "taxi_zone_lookup.csv")
@@ -86,8 +97,21 @@ def build_zone_labels():
                "zone_group"] = "ring"
     shapes.loc[in_cbd, "zone_group"] = "cbd"
 
+    # Distances are rounded to whole feet, but the six touching zones are
+    # exactly 0 and the next nearest ring zone is 908 ft away
+    distance = shapes["distance_to_cbd_ft"]
+    ring, control = (shapes["zone_group"] == g for g in ["ring", "control"])
+    shapes["zone_group_fine"] = shapes["zone_group"]
+    shapes.loc[ring & (distance == 0), "zone_group_fine"] = "ring_adjacent"
+    shapes.loc[ring & (distance > 0), "zone_group_fine"] = "ring_across"
+    shapes.loc[control & (distance <= NEAR_DISTANCE_FT),
+               "zone_group_fine"] = "control_near"
+    shapes.loc[control & (distance > NEAR_DISTANCE_FT),
+               "zone_group_fine"] = "control_far"
+
     labels = lookup.merge(
-        shapes[["LocationID", "distance_to_cbd_ft", "zone_group"]],
+        shapes[["LocationID", "distance_to_cbd_ft", "zone_group",
+                "zone_group_fine"]],
         on="LocationID", how="left")
     labels.insert(3, "in_cbd", labels["LocationID"].isin(cbd_ids))
     assert labels["in_cbd"].sum() == len(cbd_ids) == 38
@@ -103,4 +127,8 @@ def load_zone_labels():
     """
     if not LABELS_FILE.exists():
         return build_zone_labels()
-    return pd.read_csv(LABELS_FILE)
+    labels = pd.read_csv(LABELS_FILE)
+    # Files saved before the finer group was added are rebuilt
+    if "zone_group_fine" not in labels.columns:
+        return build_zone_labels()
+    return labels
