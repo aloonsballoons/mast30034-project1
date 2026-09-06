@@ -4,7 +4,7 @@ The notebook calls two functions::
 
     from scripts import download
     download.download_tlc(months)
-    download.download_external(months)
+    download.download_external()
 
 Every download is skipped if its file already exists, so re-running the
 notebook does not fetch the data again. Files are written to a ``.part`` file
@@ -20,7 +20,7 @@ import os
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -42,8 +42,6 @@ ZONE_SHAPEFILE_URL = ("https://d37ci6vzurychx.cloudfront.net/misc/"
 SOCRATA_URL = "https://data.ny.gov/resource/{dataset_id}.csv"
 CBD_ZONES_ID = "yfdc-w5jh"
 CBD_SPEEDS_ID = "6p29-6xqn"
-# Subway hourly ridership is split into two datasets at the start of 2025
-SUBWAY_IDS = {2023: "wujg-7c2s", 2024: "wujg-7c2s", 2025: "5wq4-mkjj"}
 
 # NOAA daily summaries for Central Park, in metric units (mm and deg C)
 WEATHER_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
@@ -61,7 +59,6 @@ PAGE_SIZE = 50_000
 # Parallel downloads. The TLC server and data.ny.gov both handle a few
 # requests at a time without refusing them.
 TLC_WORKERS = 4
-SUBWAY_WORKERS = 4
 
 RETRIES = 5
 TIMEOUT = (30, 300)  # seconds to connect, seconds between bytes
@@ -425,81 +422,8 @@ def download_weather():
                          params=params)
 
 
-def subway_path(year, month):
-    """Return the local path of one month of subway ridership.
-
-    Args:
-        year (int): Year.
-        month (int): Month (1-12).
-
-    Returns:
-        Path: e.g. ``data/raw/mta/subway/subway_hourly_2023-01.parquet``.
-    """
-    return (config.RAW_DIR / "mta" / "subway"
-            / f"subway_hourly_{year}-{month:02d}.parquet")
-
-
-def _subway_day(day):
-    """Download one day of subway ridership, grouped by station and hour.
-
-    The server sums over payment method and fare class. Grouping a whole
-    month at once takes minutes per request on data.ny.gov, while one day
-    (about 10,000 rows) takes a few seconds.
-
-    Args:
-        day (date): The day to download.
-
-    Returns:
-        pandas.DataFrame: One row per station complex and hour.
-    """
-    start = f"{day.isoformat()}T00:00:00"
-    end = f"{(day + timedelta(days=1)).isoformat()}T00:00:00"
-    where = (f"transit_mode = 'subway' AND transit_timestamp >= '{start}' "
-             f"AND transit_timestamp < '{end}'")
-    keys = ("station_complex_id, station_complex, borough, latitude, "
-            "longitude, transit_timestamp")
-    select = (f"{keys}, sum(ridership) AS ridership, "
-              f"sum(transfers) AS transfers")
-    return socrata_download(SUBWAY_IDS[day.year], select=select, where=where,
-                            group=keys, order=keys)
-
-
-def download_subway(months):
-    """Download hourly subway ridership by station, one file per month.
-
-    Only ``transit_mode = 'subway'`` is kept (not the tram or Staten Island
-    Railway). 2023-2024 and 2025 come from two different datasets with the
-    same columns.
-
-    Args:
-        months (list of tuple): (year, month) pairs to download.
-
-    Returns:
-        list of Path: One parquet file per month.
-    """
-    paths = []
-    for year, month in months:
-        dest = subway_path(year, month)
-        paths.append(dest)
-        if dest.exists():
-            continue
-        days = [date(year, month, day) for day in
-                range(1, calendar.monthrange(year, month)[1] + 1)]
-        with ThreadPoolExecutor(SUBWAY_WORKERS) as pool:
-            data = pd.concat(pool.map(_subway_day, days), ignore_index=True)
-
-        data["transit_timestamp"] = pd.to_datetime(data["transit_timestamp"])
-        for column in ("latitude", "longitude", "ridership", "transfers"):
-            data[column] = data[column].astype(float)
-        _save_atomic(data, dest)
-        print(f"  {dest.name}: {len(data):,} rows")
-    return paths
-
-
 def external_shapes(paths):
     """Tabulate rows x columns of each downloaded external dataset.
-
-    Subway months are added together into one row.
 
     Args:
         paths (dict): The output of ``download_external``.
@@ -518,31 +442,19 @@ def external_shapes(paths):
     zones = gpd.read_file(paths["shapefile"])
     records.append({"dataset": "shapefile", "files": 1, "rows": len(zones),
                     "columns": zones.shape[1]})
-    subway = parquet_shapes(paths["subway"])
-    records.append({"dataset": "subway", "files": len(subway),
-                    "rows": subway["rows"].sum(),
-                    "columns": subway["columns"].max()})
     return pd.DataFrame(records)
 
 
-def download_external(months):
+def download_external():
     """Download every external dataset listed in ``external_datasets.md``.
 
-    Args:
-        months (list of tuple): Months of subway ridership to download.
-            The other datasets are small and always cover the full timeline.
+    They are small, so they always cover the full timeline.
 
     Returns:
         dict: Local paths, keyed by dataset name.
     """
-    print("Taxi zones")
     paths = download_taxi_zones()
-    print("MTA CBD taxi zones")
     paths["cbd_zones"] = download_cbd_zones()
-    print("MTA CBD speeds")
     paths["cbd_speeds"] = download_cbd_speeds()
-    print("NOAA weather")
     paths["weather"] = download_weather()
-    print(f"MTA subway ridership: {len(months)} months")
-    paths["subway"] = download_subway(months)
     return paths

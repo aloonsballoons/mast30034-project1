@@ -7,11 +7,10 @@ The notebook sits in the repository root, so it imports this module with::
 Modules in ``scripts/`` import it the same way.
 
 To process only a few months, so the whole notebook can be checked in
-minutes instead of hours, turn on QUICK_RUN in the notebook's first cell::
+minutes instead of hours, set ``QUICK_RUN=1`` in the environment before
+starting Jupyter::
 
-    config.QUICK_RUN = True
-
-Or set ``QUICK_RUN=1`` in the environment before starting Jupyter.
+    QUICK_RUN=1 jupyter lab main.ipynb
 """
 
 import os
@@ -54,13 +53,22 @@ SERVICES = ["yellow", "fhvhv"]
 # ---------------------------------------------------------------------------
 # Quick run
 # ---------------------------------------------------------------------------
-# Off by default. Turn it on with `config.QUICK_RUN = True` in the notebook,
-# or QUICK_RUN=1 (or true/yes) in the environment
-QUICK_RUN = os.environ.get("QUICK_RUN", "0").lower() in {"1", "true", "yes"}
-
 # The same two calendar months before and after the toll, so a quick run can
 # still compare like with like
 QUICK_RUN_MONTHS = [(2024, 1), (2024, 3), (2025, 1), (2025, 3)]
+
+
+def quick_run():
+    """Return whether the QUICK_RUN environment variable is on.
+
+    It is read on every call rather than stored in this module, so the only
+    way to turn a quick run on is to set QUICK_RUN=1 (or true/yes, in any
+    case) in the environment before starting Jupyter.
+
+    Returns:
+        bool: True for a quick run, False (the default) for the full run.
+    """
+    return os.environ.get("QUICK_RUN", "0").lower() in {"1", "true", "yes"}
 
 
 def all_months():
@@ -81,7 +89,7 @@ def months_to_process():
     """Return the months the pipeline should use.
 
     Returns:
-        list of tuple: QUICK_RUN_MONTHS when QUICK_RUN is on, otherwise every
-        month in the timeline.
+        list of tuple: QUICK_RUN_MONTHS when QUICK_RUN is on in the
+        environment, otherwise every month in the timeline.
     """
-    return QUICK_RUN_MONTHS if QUICK_RUN else all_months()
+    return QUICK_RUN_MONTHS if quick_run() else all_months()

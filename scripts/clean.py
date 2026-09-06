@@ -2,10 +2,11 @@
 
 The notebook runs this module in four parts:
 
-1. Checks on the full raw data: nulls (``null_counts``), yellow Flex Fare
-   trips (``flex_fare_check``), yellow ``extra`` values (``extra_values``)
-   and distributions (``distribution_quantiles``, ``histogram``).
-2. Cleaning (``clean``): every removal rule is in ``RULES``, with its reason.
+1. Checks on the full raw data: nulls (``null_counts``), zero and negative
+   yellow fares (``fare_signs``), yellow ``extra`` values (``extra_values``,
+   ``extra_rule_coverage``), CBD fee values (``cbd_fee_values``) and
+   distributions (``distribution_quantiles``, ``histogram``).
+2. Cleaning (``clean``): every removal rule is in ``rules``, with its reason.
    ``step_shapes`` counts rows x columns after each rule in one pass.
 3. New columns (``add_columns``): trip time, revenue, earnings per engaged
    hour, zone and trip groups, time band and calendar columns.
@@ -66,9 +67,7 @@ ZONE_GROUPS = ["cbd", "ring_adjacent", "ring_across", "control_near",
 TRIP_GROUPS = {"cbd": "treated", "ring_adjacent": "ring_adjacent",
                "ring_across": "ring_across", "control_near": "control_near",
                "control_far": "control_far"}
-# Back to the three groups of Step 3: zone groups, then trip groups
-COARSE = {"cbd": "cbd", "ring_adjacent": "ring", "ring_across": "ring",
-          "control_near": "control", "control_far": "control"}
+# Back to three trip groups: treated, ring and control
 TRIP_COARSE = {"treated": "treated", "ring_adjacent": "ring",
                "ring_across": "ring", "control_near": "control",
                "control_far": "control"}
@@ -162,77 +161,67 @@ def nulls_by_year(table, keys):
     return totals
 
 
-def flex_fare_check(yellow):
-    """Check that the yellow null rows are exactly the Flex Fare trips.
-
-    Args:
-        yellow (pyspark.sql.DataFrame): Raw yellow trips.
-
-    Returns:
-        pandas.DataFrame: One row per month with ``rows``, ``flex_fare``
-        (``payment_type`` 0), ``all_four_null`` (null ``passenger_count``,
-        ``RatecodeID``, ``congestion_surcharge`` and ``airport_fee``),
-        ``both`` and ``some_null`` (some but not all four null).
-    """
-    columns = ["passenger_count", "RatecodeID", "congestion_surcharge",
-               "airport_fee"]
-    nulls = sum(F.col(c).isNull().cast("int") for c in columns)
-    flex = F.col("payment_type") == FLEX_FARE
-    table = yellow.groupBy("file_month").agg(
-        F.count("*").alias("rows"),
-        F.sum(flex.cast("int")).alias("flex_fare"),
-        F.sum((nulls == 4).cast("int")).alias("all_four_null"),
-        F.sum((flex & (nulls == 4)).cast("int")).alias("both"),
-        F.sum(((nulls > 0) & (nulls < 4)).cast("int")).alias("some_null"),
-    ).orderBy("file_month").toPandas()
-    table["flex_share"] = table["flex_fare"] / table["rows"]
-    return table
-
-
 def fare_signs(yellow):
     """Count zero and negative yellow fares by year, vendor and payment type.
 
+    A negative fare counts as a reversal when another row in the same file
+    has the same vendor, pickup and drop-off times and zones, and the same
+    fare with a positive sign, so the two rows cancel. The rows are matched
+    one month at a time: a join over all 36 months ran out of memory.
+
     Args:
         yellow (pyspark.sql.DataFrame): Raw yellow trips.
 
     Returns:
-        pandas.DataFrame: ``rows``, ``negative``, ``zero`` and
-        ``negative_pct`` for each group.
+        pandas.DataFrame: ``rows``, ``negative``, ``zero``, ``negative_pct``
+        and ``reversal_pct`` (share of the negative fares that are
+        reversals) for each group.
     """
-    table = yellow.groupBy(
-        F.year("file_month").alias("year"), "VendorID", "payment_type"
-    ).agg(
+    keys = ["year", "VendorID", "payment_type"]
+    yellow = yellow.withColumn("year", F.year("file_month"))
+    table = yellow.groupBy(keys).agg(
         F.count("*").alias("rows"),
         F.sum((F.col("fare_amount") < 0).cast("int")).alias("negative"),
         F.sum((F.col("fare_amount") == 0).cast("int")).alias("zero"),
-    ).orderBy("year", "VendorID", "payment_type").toPandas()
+    ).orderBy(keys).toPandas()
+
+    trip = ["VendorID", *TIME_COLUMNS["yellow"], "PULocationID",
+            "DOLocationID", "fare"]
+    months = sorted(row[0] for row in
+                    yellow.select("file_month").distinct().collect())
+    reversals = []
+    for month in months:
+        data = yellow.where(F.col("file_month") == month)
+        positive = (data.where(F.col("fare_amount") > 0)
+                    .withColumn("fare", F.col("fare_amount")).select(trip))
+        negative = (data.where(F.col("fare_amount") < 0)
+                    .withColumn("fare", -F.col("fare_amount")))
+        reversals.append(negative.join(positive, trip, "left_semi")
+                         .groupBy(keys).count().toPandas())
+    reversals = pd.concat(reversals).groupby(keys, as_index=False).sum()
+    table = table.merge(reversals, on=keys, how="left")
     table["negative_pct"] = (table["negative"] / table["rows"] * 100).round(2)
-    return table
+    table["reversal_pct"] = (table["count"].fillna(0) / table["negative"]
+                             * 100).round(1)
+    return table.drop(columns="count")
 
 
 def extra_values(yellow):
-    """Count yellow trips by vendor, month, hour, ``extra`` and fee values.
+    """Count yellow trips by vendor, year and ``extra`` value.
 
     Args:
         yellow (pyspark.sql.DataFrame): Raw yellow trips.
 
     Returns:
-        pandas.DataFrame: Trip counts for every combination seen, with
-        ``weekend`` (Saturday or Sunday pickup).
+        pandas.DataFrame: ``VendorID``, ``year``, ``extra`` and ``count``.
     """
-    pickup = TIME_COLUMNS["yellow"][0]
     return yellow.groupBy(
-        "VendorID", "file_month",
-        F.hour(pickup).alias("hour"),
-        F.dayofweek(pickup).isin(1, 7).alias("weekend"),
+        "VendorID", F.year("file_month").alias("year"),
         F.round("extra", 2).alias("extra"),
-        F.round("congestion_surcharge", 2).alias("congestion_surcharge"),
-        F.round("airport_fee", 2).alias("airport_fee"),
-        F.round("cbd_congestion_fee", 2).alias("cbd_congestion_fee"),
     ).count().toPandas()
 
 
-def driver_extra(data):
+def driver_extra(data, cbd_fallback=True):
     """Return the part of yellow ``extra`` that goes to the driver.
 
     Vendor 1 puts the congestion surcharge, airport fee and usually the CBD
@@ -243,6 +232,8 @@ def driver_extra(data):
 
     Args:
         data (pyspark.sql.DataFrame): Yellow trips.
+        cbd_fallback (bool): Try again without the CBD fee. Only turned off
+            to measure how many trips need it.
 
     Returns:
         pyspark.sql.Column: The driver's surcharges in dollars, or null.
@@ -255,10 +246,12 @@ def driver_extra(data):
     no_cbd = F.round(extra - fees["congestion_surcharge"]
                      - fees["airport_fee"], 2)
     valid = DRIVER_EXTRAS
-    return (F.when(F.col("VendorID") != VENDOR_WITH_FEES_IN_EXTRA,
+    rule = (F.when(F.col("VendorID") != VENDOR_WITH_FEES_IN_EXTRA,
                    F.when(F.round(extra, 2).isin(valid), extra))
-            .when(all_fees.isin(valid), all_fees)
-            .when(no_cbd.isin(valid), no_cbd))
+            .when(all_fees.isin(valid), all_fees))
+    if cbd_fallback:
+        rule = rule.when(no_cbd.isin(valid), no_cbd)
+    return rule
 
 
 def extra_rule_coverage(yellow):
@@ -269,39 +262,18 @@ def extra_rule_coverage(yellow):
 
     Returns:
         pandas.DataFrame: One row per vendor and year with ``rows``,
-        ``matched`` (a driver surcharge was found) and ``matched_share``.
+        ``matched_pct`` (share of rows where a driver surcharge was found)
+        and ``no_fallback_pct`` (the same without the CBD fee fallback).
     """
     table = yellow.groupBy("VendorID", F.year("file_month").alias("year")).agg(
         F.count("*").alias("rows"),
         F.count(driver_extra(yellow)).alias("matched"),
+        F.count(driver_extra(yellow, cbd_fallback=False)).alias("no_fallback"),
     ).orderBy("VendorID", "year").toPandas()
-    table["matched_share"] = table["matched"] / table["rows"]
+    for column in ["matched", "no_fallback"]:
+        table[f"{column}_pct"] = (table.pop(column) / table["rows"] * 100
+                                  ).round(2)
     return table
-
-
-def driver_extra_by_hour(yellow):
-    """Share of weekday yellow trips with each driver surcharge, by hour.
-
-    If ``driver_extra`` works, $1 should appear overnight (8pm-6am) and
-    $2.50 in the weekday rush hour (4-8pm).
-
-    Args:
-        yellow (pyspark.sql.DataFrame): Yellow trips.
-
-    Returns:
-        pandas.DataFrame: Rows are driver surcharge amounts, columns are
-        pickup hours, values are the share of that hour's matched weekday
-        trips in %.
-    """
-    pickup = TIME_COLUMNS["yellow"][0]
-    counts = (yellow.where(~F.dayofweek(pickup).isin(1, 7))
-              .withColumn("driver_extra", driver_extra(yellow))
-              .where(F.col("driver_extra").isNotNull())
-              .groupBy(F.hour(pickup).alias("hour"), "driver_extra")
-              .count().toPandas())
-    table = counts.pivot(index="driver_extra", columns="hour",
-                         values="count").fillna(0)
-    return (table / table.sum() * 100).round(1)
 
 
 def hourly_counts(data, service):
@@ -325,29 +297,35 @@ def hourly_counts(data, service):
     return table / table.sum() * 100
 
 
-def cbd_fee_by_hour(data, service):
-    """Count 2025 trips by pickup hour and ``cbd_congestion_fee`` value.
+def cbd_fee_values(data, service):
+    """Count 2025 trips by ``cbd_congestion_fee`` value and pickup hour.
 
     Args:
         data (pyspark.sql.DataFrame): Raw trips.
         service (str): ``"yellow"`` or ``"fhvhv"``.
 
     Returns:
-        pandas.DataFrame: Rows are fee values seen on at least 0.1% of 2025
-        trips, columns are pickup hours, values are trip counts.
+        pandas.DataFrame: One row per fee value with ``trips``,
+        ``trips_pct`` (share of 2025 trips) and ``hours`` (how many of the
+        24 pickup hours the value appears in).
     """
     pickup = TIME_COLUMNS[service][0]
-    counts = (data.where(F.col("file_month") >= "2025-01-01")
-              .groupBy(F.hour(pickup).alias("hour"),
-                       F.round("cbd_congestion_fee", 2).alias("fee"))
+    counts = (data.where(F.year("file_month") == 2025)
+              .groupBy(F.round("cbd_congestion_fee", 2).alias("fee"),
+                       F.hour(pickup).alias("hour"))
               .count().toPandas())
-    table = counts.pivot(index="fee", columns="hour",
-                         values="count").fillna(0).astype("int64")
-    return table[table.sum(axis=1) >= 0.001 * table.values.sum()]
+    table = counts.groupby("fee").agg(trips=("count", "sum"),
+                                      hours=("hour", "nunique"))
+    table.insert(1, "trips_pct",
+                 (table["trips"] / table["trips"].sum() * 100).round(3))
+    return table
 
 
 def distribution_quantiles(data, service):
-    """Quantiles of trip length, distance, speed and money on every row.
+    """Quantiles of trip length, distance, speed and money.
+
+    Only rows with a positive trip time and distance count, since speed
+    needs both.
 
     Each variable is first counted into fine bins with ``histogram`` (a
     plain group-by count, which needs little memory), and the quantiles are
@@ -370,7 +348,9 @@ def distribution_quantiles(data, service):
         "speed_mph": (0, 100, 0.1),
         _money(service): (-50, 500, 0.25),
     }
-    data = data.withColumn("trip_minutes", F.col("trip_seconds") / 60)
+    data = (data.where((F.col("trip_seconds") > 0)
+                       & (F.col(_distance(service)) > 0))
+            .withColumn("trip_minutes", F.col("trip_seconds") / 60))
     probs = [0.001, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 0.999]
     table = pd.DataFrame(index=pd.Index(probs, name="quantile"))
     for column, (start, stop, width) in bins.items():
@@ -471,9 +451,9 @@ def rules(service):
              "the fare was not collected or the trip is in doubt",
              ~F.col("payment_type").isin(NO_CHARGE, DISPUTE, VOIDED)),
             ("positive_fare",
-             "Zero or negative fare (reversal rows). Flex Fare trips are "
-             "kept, because Vendor 2 recorded negative fares on real Flex "
-             "Fare trips in 2025; their revenue is set to unknown instead",
+             "Zero or negative fare (mostly reversal rows). Flex Fare "
+             "trips are kept: their negative fares aren't reversals, so "
+             "their revenue is set to unknown instead",
              (F.col("fare_amount") > 0) | flex),
             ("known_ratecode", "RatecodeID 99 (null/unknown). Flex Fare "
                                "trips have a null RatecodeID and are kept",
@@ -504,14 +484,13 @@ def clean(data, service):
     return data.where(keep)
 
 
-def step_shapes(data, service, raw_rows, raw_columns):
+def step_shapes(data, service, raw_columns):
     """Count rows x columns after each cleaning step, in one pass.
 
     Args:
         data (pyspark.sql.DataFrame): Raw trips with ``add_trip_time``
             (already cut down to the kept columns).
         service (str): ``"yellow"`` or ``"fhvhv"``.
-        raw_rows (int): Rows in the raw files.
         raw_columns (str): Column count of the raw files, e.g. ``"19-20"``.
 
     Returns:
@@ -529,7 +508,7 @@ def step_shapes(data, service, raw_rows, raw_columns):
     row = data.agg(F.count("*").alias("all"), *counts).first()
 
     records = [
-        {"step": "raw", "reason": "Raw files", "rows": raw_rows,
+        {"step": "raw", "reason": "Raw files", "rows": row["all"],
          "columns": raw_columns},
         {"step": "keep_columns", "reason": "Keep only the columns we need",
          "rows": row["all"], "columns": str(kept_columns)},
@@ -539,7 +518,7 @@ def step_shapes(data, service, raw_rows, raw_columns):
                         "columns": str(kept_columns)})
     table = pd.DataFrame(records)
     table["removed"] = -table["rows"].diff().fillna(0).astype(int)
-    table["removed_pct"] = (table["removed"] / raw_rows * 100).round(3)
+    table["removed_pct"] = (table["removed"] / row["all"] * 100).round(3)
     return table
 
 
@@ -719,8 +698,7 @@ def summarise_month(spark, service, year, month, labels, overwrite=False):
     Months are independent (every summary row has one date), so doing one
     month at a time keeps Spark's memory use small. Each month is saved to
     ``data/curated/summary_parts/`` and reused on the next run unless
-    ``overwrite`` is true, or its drop-off groups aren't all in
-    ``ZONE_GROUPS`` (a part saved before the zone groups changed).
+    ``overwrite`` is true.
 
     Args:
         spark (SparkSession): Active session.
@@ -737,10 +715,7 @@ def summarise_month(spark, service, year, month, labels, overwrite=False):
 
     path = PARTS_DIR / f"{service}_{year}-{month:02d}.parquet"
     if path.exists() and not overwrite:
-        table = pd.read_parquet(path)
-        if table["dropoff_group"].isin(ZONE_GROUPS).all():
-            return table
-        print(f"Rebuilding {path.name}: saved with other zone groups")
+        return pd.read_parquet(path)
     trips = add_trip_time(read_month(spark, service, year, month), service)
     trips = add_columns(clean(trips, service), service, spark, labels)
     table = summarise(trips, service).toPandas()
