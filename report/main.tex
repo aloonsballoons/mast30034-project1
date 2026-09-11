@@ -12,6 +12,10 @@
 \setlength\parindent{0pt}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % add other packages here if required
+\usepackage{enumitem}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\usepackage{placeins}
 
 %% Bibliography are specified in this file. You can also choose inline bib style if you want to. But make sure your citation style is consistent (and proper)
 % For more details on citation: https://library.unimelb.edu.au/recite
@@ -52,16 +56,57 @@ Always remember to cite anything that is not your work. For instance, you must c
 
 % You can have \section{}, \subsection{}, and \subsubsection{}, \section*{}, \subsection*{}, and \subsubsection*{}
 \section{Preprocessing}
-\begin{enumerate} 
-    \item Example for enumerated points
-    % use \item to create more points
-\end{enumerate}
+The TLC receives trip records from the technology providers in each vehicle and makes no promise that they are accurate \cite{tlctripdata}, so every record is checked before use. All checks, cut-offs and removals are run on the full data in PySpark, one month at a time. Table~\ref{tab:cleaning} gives the shape of the data after each step, and the points below give the reason for each step.
 
-\begin{itemize} 
-    \item Example for dot points
-    \item[*] You can change dot points to any symbols by putting [SYMBOL].
-    \item[$\times$] Here's a fun example.
-\end{itemize} 
+\begin{table}[ht]
+    \centering
+    \small
+    \caption{Shape of the taxi data after each cleaning step. \emph{Removed} is the share of raw rows removed by that step; -- marks a step that does not apply to the service.}
+    \label{tab:cleaning}
+    \begin{tabular}{@{}rl rrr rrr@{}}
+        \toprule
+        & & \multicolumn{3}{c}{Yellow taxi} & \multicolumn{3}{c}{HVFHV (Uber and Lyft)} \\
+        \cmidrule(lr){3-5} \cmidrule(l){6-8}
+        & Step & Rows & Cols & Removed & Rows & Cols & Removed \\
+        \midrule
+        & Raw files (Jan 2023--Dec 2025) & 128,202,548 & 19--20 & & 715,550,152 & 24--25 & \\
+        1 & Keep used columns & 128,202,548 & 14 & 0\% & 715,550,152 & 10 & 0\% \\
+        2 & Pickup in the file's month & 128,201,184 & 14 & $<$0.01\% & 715,550,152 & 10 & 0\% \\
+        3 & Drop-off after pickup & 127,625,804 & 14 & 0.45\% & 715,519,470 & 10 & $<$0.01\% \\
+        4 & Fare collected (payment type) & 124,407,631 & 14 & 2.51\% & -- & & \\
+        5 & Positive fare & 123,959,890 & 14 & 0.35\% & -- & & \\
+        6 & Known rate code & 122,483,608 & 14 & 1.15\% & -- & & \\
+        7 & Positive driver pay & -- & & & 714,346,062 & 10 & 0.16\% \\
+        8 & Positive distance & 120,019,973 & 14 & 1.92\% & 714,260,147 & 10 & 0.01\% \\
+        9 & Outlier caps & 119,649,902 & 14 & 0.29\% & 714,147,203 & 10 & 0.02\% \\
+        10 & Known pickup and drop-off zones & 118,440,009 & 14 & 0.94\% & 683,572,826 & 10 & 4.27\% \\
+        \midrule
+        & Cleaned (share of raw rows kept) & \multicolumn{3}{l}{118,440,009~$\times$~14 (92.4\%)} & \multicolumn{3}{l}{683,572,826~$\times$~10 (95.5\%)} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+\FloatBarrier % print Table 1 before the step bullets that refer to it
+
+\subsection{Taxi trip data}
+\begin{itemize}[leftmargin=*, itemsep=1pt, topsep=2pt]
+    \item \textbf{One schema (step 1).} Column types and names change during 2023, so each month is cast to one schema before stacking, keeping only the columns used later. The extra raw column in 2025 records the new toll fee.
+    \item \textbf{Nulls are kept.} Yellow nulls fall in four columns only, and in every month on exactly the Flex Fare trips (payment type 0, a price agreed upfront \cite{tlcyellowdict}). These are real trips that grew from 3.4\% of yellow rows in 2023 to 23.8\% in 2025, so dropping them would fake a fall in trips after the toll. None of the four columns is used, so nothing is imputed. The toll fee column is null only before the toll began.
+    \item \textbf{Impossible times (steps 2--3).} A pickup outside the file's month has a wrong date, and a drop-off at or before pickup gives no trip length. 93\% of the yellow rows removed at step 3 come from vendor 7 (Helix), new in December 2024 \cite{tlcyellowdict}, which records this on every trip. Its pickups are in the tolled area as often as yellow pickups overall (56.4\% and 56.8\%), so removing it does not favour either side of the comparison.
+    \item \textbf{Unreliable fares (steps 4--6, yellow).} Payment types 3, 4 and 6 are no charge, dispute and voided trips, and rate code 99 is unknown \cite{tlcyellowdict}, so their revenue cannot be trusted. Most zero or negative fares are reversals: 88--92\% of negative cash, no-charge and dispute fares cancel another row exactly. Flex Fare trips skip steps 5--6, because their negative fares (20.5\% of Vendor 2's in 2025) cancel nothing. They are kept with unknown revenue, so 2025 yellow earnings are known for 94.7--96.6\% of trips in each zone group.
+    \item \textbf{Unpaid trips (step 7, HVFHV).} Driver pay is what the driver earns after commission, excluding tips \cite{tlchvfhvdict}. It is the Uber and Lyft earnings outcome, so zero or negative pay is removed. Most of these rows are from January--March 2023, before the comparison period.
+    \item \textbf{Outliers (steps 8--9).} Zero distance cannot be a completed trip. The caps remove trips under 1 minute or over 5 hours, over 100 miles, over 60 mph on average, or paying over \$500. They were set from full-data histograms where each tail turns into impossible values, and sit well above every 99.9th percentile (under 2 hours, 54 miles, 48 mph and \$152).
+    \item \textbf{Unknown zones (step 10).} Zones 264 (``Unknown'') and 265 (``Outside of NYC'') have no shape \cite{tlczones}, so the trip cannot be placed relative to the tolled area.
+    \item \textbf{Summary table.} Earnings are driver pay, or for yellow the fare plus the driver's own surcharges, after removing the city and MTA charges that Vendor 1 adds to the same column. Trips are summed per service $\times$ pickup zone $\times$ drop-off zone group $\times$ date $\times$ time band, with medians taken over every trip and empty combinations kept as 0 trips: 11,529,920~$\times$~17 (2~$\times$~263~$\times$~5~$\times$~1,096~$\times$~4). This counts all 802 million cleaned trips in a table small enough to model, and its totals are checked against Table~\ref{tab:cleaning}.
+\end{itemize}
+
+\subsection{External data}
+\begin{itemize}[leftmargin=*, itemsep=1pt, topsep=2pt]
+    \item \textbf{Zone groups.} The MTA list of tolled zones (38~$\times$~2) \cite{mtacbdzones} is joined to the TLC zone lookup (265~$\times$~4) on zone ID, with each zone's distance to the tolled area from the TLC shapefile (263~$\times$~7) \cite{tlczones}: 265~$\times$~8. Zones within 1 km form a \emph{ring} (19 zones, 13 across a river), since riders can walk out of the tolled area and drivers can wait at its edge; as controls they would overstate the toll's effect. Any cut-off from 0.94 to 1.05 km gives the same ring. The other 206 zones are controls. A trip is \emph{treated} if either end is in the tolled area, otherwise \emph{ring} if either end is in the ring.
+    \item \textbf{Weather and holidays.} NOAA daily Central Park records \cite{noaaghcnd}, 1,096~$\times$~7, already metric. The station ID is dropped and the one missing snow depth (17 September 2025, 21\textdegree C) is set to 0: 1,096~$\times$~6. A flag marks the 35 US federal holidays of 2023--2025 \cite{opmholidays}, on the weekday observed.
+    \item \textbf{Joins.} Both join on date: 11,529,920~$\times$~17 $\to$ $\times$~22 $\to$ $\times$~23, with the row count checked unchanged. Both models are fitted to this table.
+\end{itemize}
+
+\textbf{Does cleaning bias the comparison?} A rule can bias it if it removes a larger share from one group after the toll. From 2024 to 2025 the share of yellow rows removed rose by 2.6 points for treated trips and 3.0 for control trips, a gap of at most 0.4 points. For HVFHV, step 10 removed 4.17\% of treated rows in 2024 and 4.84\% in 2025, and cannot remove control trips, so up to 0.7 points of any fall in treated HVFHV trips may come from trips to unknown zones.
 
 \section{Analysis and Geospatial Visualisation}
 \lipsum[4-5]

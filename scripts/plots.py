@@ -79,8 +79,8 @@ def hourly_shares(tables, title):
 # Section 5: exploration and maps
 # ---------------------------------------------------------------------------
 GROUP_NAMES = {"treated": "Treated (touches CBD)", "ring": "Ring",
-               "control": "Control"}
-ZONE_GROUP_NAMES = {"cbd": "CBD", "ring": "Ring", "control": "Control"}
+               "control": "Control", "ring_adjacent": "Ring, touching CBD",
+               "ring_across": "Ring, across water"}
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 BAND_NAMES = {"overnight": "Overnight\n21:00-05:00",
               "morning_peak": "Morning\n05:00-10:00",
@@ -216,6 +216,10 @@ LABELS = {
     "eph_after": "Earnings per hour, after ($)",
     "eph_change_pct": "Earnings per hour, change (%)",
     "p90_wait_min": "90th percentile wait (min)",
+    # Section 6: models
+    "trips": "Trips", "log_eph": "Earnings per engaged hour",
+    "ci_low_pct": "95% CI low (%)", "ci_high_pct": "95% CI high (%)",
+    "usual": "Usual level", "year": "Year", "month": "Month",
 }
 # Last words of a column name that are units, shown in brackets
 UNITS = {"pct": "%", "ft": "ft", "mm": "mm", "mph": "mph", "min": "min",
@@ -574,31 +578,63 @@ def before_after_histograms(before, after, xlabels):
     return fig
 
 
-def monthly_lines(table, ylabel, title, toll_date=None):
-    """One line per column of a monthly table.
+def monthly_lines(table, ylabel, title, toll_date):
+    """One line per trip group of a monthly table.
 
     Args:
-        table (pandas.DataFrame): Rows are months (dates or periods),
-            columns are series.
+        table (pandas.DataFrame): Rows are months (dates), columns are
+            trip groups.
         ylabel (str): y-axis label.
         title (str): Figure title.
-        toll_date (datetime.date, optional): Draw the toll line here.
+        toll_date (datetime.date): Where to draw the toll line.
 
     Returns:
         matplotlib.figure.Figure: The figure.
     """
     fig, ax = plt.subplots(layout="constrained")
-    index = table.index
-    if isinstance(index, pd.PeriodIndex):
-        index = index.to_timestamp()
     for column in table.columns:
-        ax.plot(index, table[column], marker="o", markersize=3,
-                label=GROUP_NAMES.get(column,
-                                      ZONE_GROUP_NAMES.get(column, column)))
-    if toll_date is not None:
-        ax.axvline(pd.Timestamp(toll_date), color="black", linestyle="--",
-                   linewidth=0.8)
+        ax.plot(table.index, table[column], marker="o", markersize=3,
+                label=GROUP_NAMES[column])
+    ax.axvline(pd.Timestamp(toll_date), color="black", linestyle="--",
+               linewidth=0.8)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.legend()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Section 6: models
+# ---------------------------------------------------------------------------
+def event_study(tables, toll_date):
+    """Figure 4: monthly toll effects with 95% intervals, one panel per
+    service.
+
+    Args:
+        tables (dict): Service -> output of ``models.event_study``.
+        toll_date (datetime.date): Where to draw the toll line.
+
+    Returns:
+        matplotlib.figure.Figure: The figure.
+    """
+    fig, axes = plt.subplots(1, len(tables), figsize=(6.5, 3.4), sharex=True,
+                             layout="constrained", squeeze=False)
+    for ax, (service, table) in zip(axes[0], tables.items()):
+        for group in ["treated", "ring_adjacent", "ring_across"]:
+            rows = table[table["group"] == group]
+            line, = ax.plot(rows["month"], rows["effect_pct"], marker="o",
+                            markersize=2.5, label=GROUP_NAMES[group])
+            ax.fill_between(rows["month"], rows["ci_low_pct"],
+                            rows["ci_high_pct"], color=line.get_color(),
+                            alpha=0.2, linewidth=0)
+        ax.axvline(pd.Timestamp(toll_date), color="black", linestyle="--",
+                   linewidth=0.8)
+        ax.axhline(0, color="#8a8983", linewidth=0.6)
+        ax.set_title(SERVICE_NAMES[service])
+        ax.xaxis.set_major_locator(mdates.YearLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    axes[0][0].set_ylabel("Trips against control (%),\n"
+                          "relative to December 2024")
+    fig.legend(*axes[0][0].get_legend_handles_labels(),
+               loc="outside lower center", ncols=3)
     return fig

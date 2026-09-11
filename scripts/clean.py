@@ -16,7 +16,7 @@ The notebook runs this module in four parts:
 import pandas as pd
 from pyspark.sql import functions as F
 
-from scripts import config
+from scripts import config, zones
 from scripts.spark_io import COLUMNS, TIME_COLUMNS
 
 # ---------------------------------------------------------------------------
@@ -27,8 +27,13 @@ FLEX_FARE = 0
 NO_CHARGE, DISPUTE, VOIDED = 3, 4, 6
 UNKNOWN_RATECODE = 99
 
-# Zones with no location: 264 = Unknown, 265 = Outside of NYC
+# Zones with no location: 264 = Unknown, 265 = Outside of NYC. A trip with
+# an end in one of them is kept only when its other end is in the CBD, so
+# it is still a treated trip (the CBD fee applies to trips that start or
+# end in the zone)
 UNKNOWN_ZONES = [264, 265]
+# The zone group those two zones get
+UNKNOWN_GROUP = "unknown"
 
 # The surcharges a yellow driver keeps (TLC taxi fare page): $1 overnight
 # (8pm-6am), $2.50 weekday rush hour (4-8pm) and $5 for LaGuardia trips,
@@ -87,6 +92,15 @@ def _vendor(service):
 
 def _money(service):
     return "fare_amount" if service == "yellow" else "driver_pay"
+
+
+def _zone_groups(labels):
+    """``LocationID`` and ``zone_group`` (the fine group) of every zone,
+    with ``UNKNOWN_GROUP`` for zones 264 and 265."""
+    return (labels[["LocationID", "zone_group_fine"]]
+            .rename(columns={"zone_group_fine": "zone_group"})
+            .fillna({"zone_group": UNKNOWN_GROUP})
+            .astype({"LocationID": "int32"}))
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +429,10 @@ def rules(service):
     distance, money = _distance(service), _money(service)
     in_file_month = (F.trunc(F.to_date(pickup), "month")
                      == F.col("file_month"))
+    labels = zones.load_zone_labels()
+    cbd = labels.loc[labels["in_cbd"], "LocationID"].tolist()
+    pickup_unknown = F.col("PULocationID").isin(UNKNOWN_ZONES)
+    dropoff_unknown = F.col("DOLocationID").isin(UNKNOWN_ZONES)
     common_start = [
         ("pickup_in_file_month",
          "Pickup date outside the month of the file (wrong dates)",
@@ -423,9 +441,10 @@ def rules(service):
          "Drop-off time before or equal to pickup time",
          F.col("trip_seconds") > 0),
     ]
+    # There is no distance rule: the raw data has no negative or null
+    # distances, and zero-distance trips are kept, with unknown earnings
+    # (add_columns), because most are paid trips the meter didn't measure
     common_end = [
-        ("positive_distance", "Zero or negative distance",
-         F.col(distance) > 0),
         ("trip_length",
          f"Trip shorter than {MIN_TRIP_MINUTES} minute or longer than "
          f"{MAX_TRIP_MINUTES // 60} hours",
@@ -439,9 +458,11 @@ def rules(service):
         ("money_cap", f"{money} over ${MAX_MONEY}",
          F.col(money) <= MAX_MONEY),
         ("known_zones", "Pickup or drop-off in zone 264 (Unknown) or 265 "
-                        "(Outside of NYC), which have no location",
-         ~F.col("PULocationID").isin(UNKNOWN_ZONES)
-         & ~F.col("DOLocationID").isin(UNKNOWN_ZONES)),
+                        "(Outside of NYC), and the other end is not in the "
+                        "CBD, so the trip group is unknown",
+         ~(pickup_unknown | dropoff_unknown)
+         | (pickup_unknown & F.col("DOLocationID").isin(cbd))
+         | (dropoff_unknown & F.col("PULocationID").isin(cbd))),
     ]
     if service == "yellow":
         flex = F.col("payment_type") == FLEX_FARE
@@ -551,7 +572,8 @@ def add_columns(data, service, spark, labels):
     ``fare_amount`` plus the driver's part of ``extra``; null when that
     can't be worked out), ``earnings`` (``revenue`` for yellow,
     ``driver_pay`` for HVFHV), ``earnings_per_engaged_hour``,
-    ``pickup_group`` and ``dropoff_group`` (one of ``ZONE_GROUPS``),
+    ``pickup_group`` and ``dropoff_group`` (one of ``ZONE_GROUPS``, or
+    ``UNKNOWN_GROUP`` for zones 264 and 265),
     ``trip_group`` (the first of ``ZONE_GROUPS`` either end falls in, named
     by ``TRIP_GROUPS``), ``trip_group_coarse`` (``treated``, ``ring`` or
     ``control``), ``after_toll``, ``date``, ``hour``, ``time_band`` and
@@ -559,7 +581,9 @@ def add_columns(data, service, spark, labels):
 
     Earnings per engaged hour is left null for shared HVFHV rides
     (``shared_match_flag`` = Y), because two trips share the same driving
-    time, and for yellow trips with unknown revenue.
+    time, and for trips with unknown earnings. Earnings are unknown for
+    zero-distance trips, and for yellow trips whose revenue can't be
+    worked out.
 
     Args:
         data (pyspark.sql.DataFrame): Output of ``clean``.
@@ -571,27 +595,30 @@ def add_columns(data, service, spark, labels):
         pyspark.sql.DataFrame: ``data`` with the new columns.
     """
     pickup = TIME_COLUMNS[service][0]
+    # A zero distance means the meter didn't measure the trip, so its fare
+    # or pay can't be trusted either. The trip still counts
+    measured = F.col(_distance(service)) > 0
     if service == "yellow":
         extra = driver_extra(data)
-        revenue = F.when((F.col("fare_amount") > 0) & extra.isNotNull(),
+        revenue = F.when((F.col("fare_amount") > 0) & extra.isNotNull()
+                         & measured,
                          F.col("fare_amount") + extra)
         data = data.withColumn("revenue", revenue)
         data = data.withColumn("earnings", F.col("revenue"))
         shared = F.lit(False)
     else:
-        data = data.withColumn("earnings", F.col("driver_pay"))
+        data = data.withColumn("earnings",
+                               F.when(measured, F.col("driver_pay")))
         shared = F.col("shared_match_flag") == "Y"
 
     data = data.withColumn(
         "earnings_per_engaged_hour",
         F.when(~shared, F.try_divide(F.col("earnings"), F.col("trip_hours"))))
 
-    groups = spark.createDataFrame(
-        labels.loc[labels["zone_group_fine"].notna(),
-                   ["LocationID", "zone_group_fine"]]
-        .rename(columns={"zone_group_fine": "zone_group"})
-        .astype({"LocationID": "int32"}))
-    groups = F.broadcast(groups)
+    # Zones 264 and 265 get UNKNOWN_GROUP. clean only keeps them on trips
+    # whose other end is in the CBD, so every trip below is still treated,
+    # ring or control
+    groups = F.broadcast(spark.createDataFrame(_zone_groups(labels)))
     data = (data
             .join(groups.withColumnsRenamed({"LocationID": "PULocationID",
                                              "zone_group": "pickup_group"}),
@@ -666,8 +693,8 @@ def flex_fare_by_group(yellow):
 def summarise(data, service):
     """Group trips into service x pickup zone x drop-off group x date x band.
 
-    Medians use ``percentile_approx`` with accuracy 1,000 (within 0.1% of
-    the true rank), computed on every trip in the group.
+    The median uses ``percentile_approx`` with accuracy 1,000 (within 0.1%
+    of the true rank), computed on every trip in the group.
 
     Args:
         data (pyspark.sql.DataFrame): Output of ``add_columns``.
@@ -676,19 +703,13 @@ def summarise(data, service):
     Returns:
         pyspark.sql.DataFrame: One row per group that has trips.
     """
-    def median(column):
-        return F.percentile_approx(column, 0.5, 1000)
-
     return (data
             .groupBy("PULocationID", "dropoff_group", "date", "time_band")
             .agg(F.count("*").alias("trips"),
                  F.count("earnings").alias("trips_with_earnings"),
                  F.sum("earnings").alias("total_earnings"),
-                 median("earnings").alias("median_earnings"),
-                 median("earnings_per_engaged_hour")
-                 .alias("median_earnings_per_engaged_hour"),
-                 F.sum("trip_hours").alias("engaged_hours"),
-                 median("speed_mph").alias("median_speed_mph"))
+                 F.percentile_approx("earnings_per_engaged_hour", 0.5, 1000)
+                 .alias("median_earnings_per_engaged_hour"))
             .withColumn("service", F.lit(service)))
 
 
@@ -728,8 +749,11 @@ def build_summary(spark, labels, months, services=("yellow", "fhvhv"),
                   overwrite=False):
     """Build the summary table, with zero rows for groups with no trips.
 
-    Every service x pickup zone (1-263) x drop-off group x date x time band
-    gets a row, so days with no trips count as 0 instead of being missing.
+    Every service x pickup zone x drop-off group x date x time band gets a
+    row, so days with no trips count as 0 instead of being missing. The
+    cells are pickup zones 1-263 x the five ``ZONE_GROUPS``, plus the CBD
+    zones x ``UNKNOWN_GROUP`` and zones 264 and 265 x ``cbd``, the only
+    cells with an unknown end that cleaning keeps.
     The table is saved to ``data/curated/trip_summary.parquet``.
 
     Args:
@@ -752,23 +776,32 @@ def build_summary(spark, labels, months, services=("yellow", "fhvhv"),
     found = pd.concat(parts, ignore_index=True)
     found["date"] = pd.to_datetime(found["date"]).dt.date
 
-    zones = labels.loc[labels["zone_group_fine"].notna(),
-                       ["LocationID", "zone_group_fine"]]
+    # Every pickup zone x drop-off group a cleaned trip can have. An
+    # unknown end is only kept opposite the CBD (the known_zones rule)
+    cells = (_zone_groups(labels)
+             .rename(columns={"LocationID": "PULocationID",
+                              "zone_group": "pickup_group"})
+             .merge(pd.DataFrame({"dropoff_group":
+                                  ZONE_GROUPS + [UNKNOWN_GROUP]}),
+                    how="cross"))
+    ends = cells[["pickup_group", "dropoff_group"]]
+    known = (ends != UNKNOWN_GROUP).all(axis=1)
+    with_cbd = (ends == "cbd").any(axis=1)
+    cells = cells[known | with_cbd]
+
     dates = pd.concat([pd.Series(pd.date_range(
         f"{year}-{month:02d}-01", periods=pd.Period(
             f"{year}-{month:02d}").days_in_month)) for year, month in months])
     grid = (pd.DataFrame({"service": list(services)})
-            .merge(zones.rename(columns={"LocationID": "PULocationID",
-                                         "zone_group_fine": "pickup_group"}),
-                   how="cross")
-            .merge(pd.DataFrame({"dropoff_group": ZONE_GROUPS}), how="cross")
+            .merge(cells, how="cross")
             .merge(pd.DataFrame({"date": dates.dt.date}), how="cross")
             .merge(pd.DataFrame({"time_band": TIME_BAND_ORDER}), how="cross"))
 
     keys = ["service", "PULocationID", "dropoff_group", "date", "time_band"]
     table = grid.merge(found, on=keys, how="left")
-    for column in ["trips", "trips_with_earnings", "total_earnings",
-                   "engaged_hours"]:
+    assert table["trips"].sum() == found["trips"].sum(), \
+        "some trips fall outside the grid"
+    for column in ["trips", "trips_with_earnings", "total_earnings"]:
         table[column] = table[column].fillna(0)
     table[["trips", "trips_with_earnings"]] = (
         table[["trips", "trips_with_earnings"]].astype("int64"))

@@ -19,6 +19,7 @@ MAST30034-Project1/
 │   ├── clean.py            Data checks, cleaning rules, new columns, summary table
 │   ├── external.py         Weather, holidays, and the joins
 │   ├── explore.py          Tables behind the exploration and maps (Section 5)
+│   ├── models.py           Difference-in-differences and LightGBM models (Section 6)
 │   ├── plots.py            Plotting helpers
 │   └── style.mplstyle      The shared style every figure uses
 ├── data/                   Created by the notebook on the first run, not committed
@@ -65,9 +66,9 @@ jupyter lab main.ipynb
 
 `scripts/config.py` sets `PYSPARK_PYTHON` to the notebook's Python, so Spark doesn't pick up another Python (such as Anaconda's) by mistake.
 
-On an Apple silicon laptop with Java 21, Sections 1–4 (after the download) took about 35 minutes when every monthly summary part in `data/curated/summary_parts/` had to be built, and about 17 minutes when the saved parts were reused. Section 5 adds about 19 minutes, mostly the Spark passes over every Uber/Lyft trip for the zone medians and pickup waits, so a full run with saved parts takes about 37 minutes. A quick run takes about 5 minutes.
+On an Apple silicon laptop with Java 21, Sections 1–4 (after the download) took about 35 minutes when every monthly summary part in `data/curated/summary_parts/` had to be built, and about 17 minutes when the saved parts were reused. Section 5 adds about 19 minutes, mostly the Spark passes over every Uber/Lyft trip for the zone medians and pickup waits, and Section 6 about 20 minutes (28 difference-in-differences fits, 8 LightGBM fits and one Spark pass for the 2024 median earnings). A full run with saved parts takes about an hour; the full run of 19 September 2026, which rebuilt every part, took 82 minutes. A quick run takes about 5 minutes.
 
-Spark runs in local mode with 2 GB of memory by default, which was enough for every step. To give it more, set `SPARK_DRIVER_MEMORY` (for example `export SPARK_DRIVER_MEMORY=6g`) before starting Jupyter. Spark's scratch files go to `spark-tmp/` in the repository root (not committed).
+Spark runs in local mode with 2 GB of memory by default. On 19 September 2026 a full run ran out of Spark memory in Section 3.3 at 2 GB (earlier runs had passed) and completed with 4 GB, so use `SPARK_DRIVER_MEMORY=4g` for full runs. To give it more, set `SPARK_DRIVER_MEMORY` (for example `export SPARK_DRIVER_MEMORY=6g`) before starting Jupyter. Spark's scratch files go to `spark-tmp/` in the repository root (not committed).
 
 ### Quick run
 
@@ -87,8 +88,8 @@ The notebook then uses only January and March of 2024 and 2025. `1`, `true` and 
 | 2 | External data: zone labels, the buffer ring, weather and holidays |
 | 3 | Clean the taxi data with PySpark and build the summary table |
 | 4 | Join weather and holidays onto the summary table. It comes after Section 3 because it needs the summary table. |
-| 5 | Explore the data and make maps: distributions before and after cleaning, what each rule removes per trip group, weekly trips, maps of change by zone, change by time band and day, MTA speeds and Uber/Lyft pickup waits. Report figures are saved to `plots/` as PDF. |
-| 6 | Fit the models: difference-in-differences and LightGBM |
+| 5 | Explore the data and make maps: distributions before and after cleaning, what each rule removes per trip group, yellow vendor 7, monthly trips relative to control, maps of change by zone, change by time band and day, Uber/Lyft pickup waits and MTA speeds. Report figures are saved to `plots/` as PDF. |
+| 6 | Fit the models: difference-in-differences (headline, event study, placebo, trend and buffer-band checks, time bands) and a LightGBM forecast of the toll period (validation against a 52-week baseline, SHAP), then compare the two. Figure 4 is saved to `plots/`. |
 
 Sections 1–4 write `data/curated/zone_labels.csv`, `trip_summary.parquet` (11.5M rows) and `model_table.parquet` (the summary table with weather and holidays joined on), plus one parquet file per service and month in `summary_parts/`. Deleting a file in `data/curated/` makes the next run rebuild it.
 

@@ -9,7 +9,8 @@ Two kinds of function:
 2. pandas tables built from the summary table. They compare the toll
    period (5 January to 31 December 2025) with the same dates a year
    earlier (``PERIODS``), so both periods cover the same season and the
-   four pre-toll days of January 2025 are left out.
+   four pre-toll days of January 2025 are left out. ``speed_change`` does
+   the same for the MTA's monthly speeds, by month.
 """
 
 from datetime import date
@@ -19,7 +20,7 @@ from pyspark.sql import functions as F
 
 from scripts import config
 from scripts.clean import (COARSE_TRIP_GROUPS, TIME_BAND_ORDER, TIME_COLUMNS,
-                           _money, rules)
+                           UNKNOWN_ZONES, _money, rules)
 
 # The toll period and the same dates a year earlier
 PERIODS = {
@@ -83,17 +84,17 @@ def _coarse_trip_group(pickup, dropoff):
             .otherwise("unknown_zone"))
 
 
-def _join_groups(data, spark, labels, column="zone_group"):
-    """Left-join a zone group onto both ends of every trip."""
+def _join_groups(data, spark, labels):
+    """Left-join the coarse zone group onto both ends of every trip."""
     groups = F.broadcast(spark.createDataFrame(
-        labels.loc[labels[column].notna(), ["LocationID", column]]
+        labels.loc[labels["zone_group"].notna(), ["LocationID", "zone_group"]]
         .astype({"LocationID": "int32"})))
     return (data
             .join(groups.withColumnsRenamed({"LocationID": "PULocationID",
-                                             column: "pickup_group"}),
+                                             "zone_group": "pickup_group"}),
                   "PULocationID", "left")
             .join(groups.withColumnsRenamed({"LocationID": "DOLocationID",
-                                             column: "dropoff_group"}),
+                                             "zone_group": "dropoff_group"}),
                   "DOLocationID", "left"))
 
 
@@ -399,39 +400,37 @@ def group_change(summary, by="trip_group"):
     return table[["before", "after", "change_pct"]]
 
 
-def zone_change(summary, medians=None, min_daily=MIN_DAILY_PICKUPS):
-    """Change in pickups (and earnings per engaged hour) by pickup zone.
+def zone_change(summary, medians):
+    """Change in pickups and earnings per engaged hour by pickup zone.
 
     Args:
         summary (pandas.DataFrame): The summary table.
-        medians (pandas.DataFrame, optional): Output of ``zone_medians``
-            for the same service, to add the change in median earnings per
-            engaged hour.
-        min_daily (float): Pickups a day before the toll a zone needs for
-            ``enough_trips``.
+        medians (pandas.DataFrame): Output of ``zone_medians`` for the same
+            service.
 
     Returns:
         pandas.DataFrame: One row per service and pickup zone with
-        ``before``, ``after``, ``change_pct``, ``daily_before`` and
-        ``enough_trips``, plus ``eph_before``, ``eph_after`` and
-        ``eph_change_pct`` when ``medians`` is given.
+        ``before``, ``after``, ``change_pct``, ``daily_before``,
+        ``enough_trips`` (at least ``MIN_DAILY_PICKUPS`` a day before the
+        toll), ``eph_before``, ``eph_after`` and ``eph_change_pct``.
     """
-    table = add_period(summary[["service", "PULocationID", "date",
-                                "trips"]])
-    table = table.dropna(subset=["period"])
+    # Zones 264 and 265 have no shape and aren't one place, so they are
+    # left out of the zone table
+    table = summary.loc[~summary["PULocationID"].isin(UNKNOWN_ZONES),
+                        ["service", "PULocationID", "date", "trips"]]
+    table = add_period(table).dropna(subset=["period"])
     days = table.groupby("period")["date"].nunique()
     zones = (table.groupby(["service", "PULocationID", "period"])["trips"]
              .sum().unstack("period").reset_index())
     zones["change_pct"] = _pct_change(zones["before"], zones["after"])
     zones["daily_before"] = zones["before"] / days["before"]
-    zones["enough_trips"] = zones["daily_before"] >= min_daily
-    if medians is not None:
-        eph = (medians.pivot(index="PULocationID", columns="period",
-                             values="median_earnings_per_engaged_hour")
-               .rename(columns=lambda p: f"eph_{p}"))
-        zones = zones.merge(eph, on="PULocationID", how="left")
-        zones["eph_change_pct"] = _pct_change(zones["eph_before"],
-                                              zones["eph_after"])
+    zones["enough_trips"] = zones["daily_before"] >= MIN_DAILY_PICKUPS
+    eph = (medians.pivot(index="PULocationID", columns="period",
+                         values="median_earnings_per_engaged_hour")
+           .rename(columns=lambda p: f"eph_{p}"))
+    zones = zones.merge(eph, on="PULocationID", how="left")
+    zones["eph_change_pct"] = _pct_change(zones["eph_before"],
+                                          zones["eph_after"])
     return zones
 
 
@@ -487,3 +486,30 @@ def band_day_table(changes, service, group):
     """
     table = changes.loc[(service, group), "change_pct"].unstack("day_of_week")
     return table.reindex([b for b in TIME_BAND_ORDER if b in table.index])
+
+
+def speed_change(path):
+    """MTA average speed by area, 2025 against the same months of 2024.
+
+    The MTA publishes one average speed a month for each area, so the
+    comparison runs over the months of 2025 in the file (January includes
+    the four days before the toll).
+
+    Args:
+        path (Path): The MTA CBD taxi/FHV speeds file.
+
+    Returns:
+        pandas.DataFrame: One row per ``zone`` (area), with the average
+        ``before_mph`` and ``after_mph`` and ``change_pct``.
+    """
+    speeds = pd.read_csv(path, parse_dates=["month"])
+    speeds["year"] = speeds["month"].dt.year
+    months = speeds.loc[speeds["year"] == 2025, "month"].dt.month.unique()
+    same = speeds[speeds["year"].isin([2024, 2025])
+                  & speeds["month"].dt.month.isin(months)]
+    table = (same.pivot_table(index="zone", columns="year",
+                              values="zonal_speed", aggfunc="mean")
+             .set_axis(["before_mph", "after_mph"], axis=1))
+    table["change_pct"] = _pct_change(table["before_mph"],
+                                      table["after_mph"])
+    return table
