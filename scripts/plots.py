@@ -10,6 +10,7 @@ import geopandas as gpd
 import matplotlib.dates as mdates
 import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
+import matplotlib.patheffects as patheffects
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -81,6 +82,10 @@ def hourly_shares(tables, title):
 GROUP_NAMES = {"treated": "Treated (touches CBD)", "ring": "Ring",
                "control": "Control", "ring_adjacent": "Ring, touching CBD",
                "ring_across": "Ring, across water"}
+ZONE_COLOURS = {"cbd": "#2a78d6", "ring": "#eb6834",
+                "control": "#9a998f"}
+ZONE_GROUP_NAMES = {"cbd": "Tolled zone", "ring": "Ring",
+                    "control": "Control"}
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 BAND_NAMES = {"overnight": "Overnight\n21:00-05:00",
               "morning_peak": "Morning\n05:00-10:00",
@@ -146,6 +151,12 @@ def _diverging_colormap(n=256):
 # ``_diverging_colormap``); blue against red also stays distinguishable
 # with red-green colour blindness
 DIVERGING = _diverging_colormap()
+# One-signed panels use half of it as a sequential scale, so the whole
+# ramp carries the signal instead of only one side of it
+SEQUENTIAL_FALL = colors.ListedColormap(
+    DIVERGING(np.linspace(0, 0.5, 128)), name="blue_fall")
+SEQUENTIAL_RISE = colors.ListedColormap(
+    DIVERGING(np.linspace(0.5, 1, 128)), name="red_rise")
 # Fill for zones greyed out because they have too few trips
 TOO_FEW_COLOUR = "#d4d3cd"
 
@@ -216,6 +227,13 @@ LABELS = {
     "eph_after": "Earnings per hour, after ($)",
     "eph_change_pct": "Earnings per hour, change (%)",
     "p90_wait_min": "90th percentile wait (min)",
+    "shared_pct": "Shared rides (%)",
+    "eph_known_pct": "Earnings per hour known (%)",
+    "median_speed_mph": "Median speed (mph)",
+    "median_trip_miles": "Median distance (mi)",
+    "median_trip_minutes": "Median trip time (min)",
+    "median_earnings_per_engaged_hour": "Median earnings per hour ($)",
+    "pickup_group": "Pickup group", "measure": "Measure",
     # Section 6: models
     "trips": "Trips", "log_eph": "Earnings per engaged hour",
     "ci_low_pct": "95% CI low (%)", "ci_high_pct": "95% CI high (%)",
@@ -376,7 +394,8 @@ def relative_trips(table, toll_date):
         matplotlib.figure.Figure: The figure.
     """
     services = [s for s in SERVICE_NAMES if s in set(table["service"])]
-    fig, axes = plt.subplots(1, len(services), sharex=True, sharey=True,
+    fig, axes = plt.subplots(1, len(services), figsize=(6.5, 2.9),
+                             sharex=True, sharey=True,
                              layout="constrained", squeeze=False)
     for ax, service in zip(axes[0], services):
         rows = table[table["service"] == service]
@@ -411,11 +430,53 @@ def _cbd_outline(shapes, labels):
     return union.buffer(50).buffer(-50)
 
 
-def zone_maps(shapes, labels, table, columns, titles, limits, too_few_label):
-    """Maps of change by pickup zone, side by side, with the CBD outlined.
+def _annotate_zones(ax, data, offsets, fontsize=8.5):
+    """Name zones on a map, each with a leader line to its own shape.
 
-    Zones where ``table["enough_trips"]`` is false are filled grey and
-    hatched instead of coloured.
+    The text sits on top of the choropleth, so it is drawn with a white
+    outline to stay readable over a dark fill.
+
+    A few taxi zones share a name (``zones.shared_names``), and this takes
+    the first shape of any that do. None of the zones named in the report
+    is one of them.
+
+    Args:
+        ax (matplotlib.axes.Axes): The panel to draw on.
+        data (geopandas.GeoDataFrame): Zones, with a ``zone`` name column.
+        offsets (dict): Zone name -> (dx, dy) label offset in points from
+            the zone. The sign of dx and dy also picks the alignment, so
+            the text always runs away from its zone.
+        fontsize (float): Label size in points.
+    """
+    for name, (dx, dy) in offsets.items():
+        match = data[data["zone"] == name]
+        if match.empty:
+            continue
+        # A centroid can fall outside a zone that is L-shaped or split
+        # across islands, so the leader line starts from a point the
+        # shape is guaranteed to contain
+        point = match.geometry.iloc[0].representative_point()
+        text = ax.annotate(
+            name, xy=(point.x, point.y), xytext=(dx, dy),
+            textcoords="offset points", fontsize=fontsize, color="#0b0b0b",
+            ha="left" if dx > 0 else "right" if dx < 0 else "center",
+            va="bottom" if dy > 0 else "top" if dy < 0 else "center",
+            arrowprops={"arrowstyle": "-", "linewidth": 0.7,
+                        "color": "#52514e", "shrinkA": 1, "shrinkB": 1})
+        text.set_path_effects([patheffects.withStroke(linewidth=2.4,
+                                                      foreground="white")])
+
+
+def zone_maps(shapes, labels, table, columns, titles, limits, too_few_label,
+              city_labels=None, zoom_labels=None):
+    """Map of change by pickup zone: the whole city, then the CBD up close.
+
+    Each column gets two panels. The 38 CBD zones cover about 1% of the
+    city's area, so at city scale they are a few pixels each and the panel
+    can only show the broad pattern; panel (b) zooms to the CBD and its
+    ring, which is where the report reads individual zones. Zones where
+    ``table["enough_trips"]`` is false are filled grey and hatched instead
+    of coloured.
 
     Args:
         shapes (geopandas.GeoDataFrame): Output of
@@ -423,12 +484,16 @@ def zone_maps(shapes, labels, table, columns, titles, limits, too_few_label):
         labels (pandas.DataFrame): Zone labels.
         table (pandas.DataFrame): One service's rows of
             ``explore.zone_change``.
-        columns (list of str): Column to map in each panel (values in %).
-        titles (list of str): Panel titles.
-        limits (list of float): Colour scale limit for each panel; the
+        columns (list of str): Column to map in each pair of panels
+            (values in %).
+        titles (list of str): Title for each column's first panel.
+        limits (list of float): Colour scale limit for each column; the
             scale runs from -limit to +limit, and values past it get the
             end colour.
         too_few_label (str): Legend text for the grey zones.
+        city_labels (dict, optional): Zone name -> (dx, dy) offset in
+            points, for the zones to name on the city panel.
+        zoom_labels (dict, optional): The same for the zoom panel.
 
     Returns:
         matplotlib.figure.Figure: The figure.
@@ -437,41 +502,48 @@ def zone_maps(shapes, labels, table, columns, titles, limits, too_few_label):
                         how="left")
     enough = data["enough_trips"].fillna(False).astype(bool)
     outline = gpd.GeoSeries([_cbd_outline(shapes, labels)], crs=shapes.crs)
-    # Inset extent: the CBD and the ring, with a small margin
+    # Zoom extent: the CBD and the ring, with a small margin
     near = labels.loc[labels["zone_group"].isin(["cbd", "ring"]),
                       "LocationID"]
     zoom = shapes[shapes["LocationID"].isin(near)].total_bounds
     zoom = zoom + np.array([-1, -1, 1, 1]) * 2000
-    fig, axes = plt.subplots(1, len(columns), figsize=(6.5, 3.9),
+    # Two panels per column, each the width of a single-panel figure, so
+    # the figure fills the report's text width and its fonts stay the size
+    # of every other figure's
+    # Both maps are about as tall as they are wide once the aspect is
+    # equal, so the height is set from the panel width, not the other way
+    fig, axes = plt.subplots(1, 2 * len(columns),
+                             figsize=(6.5 * len(columns), 4.6),
                              layout="constrained", squeeze=False)
-    for ax, column, title, limit in zip(axes[0], columns, titles, limits):
+    panels = axes[0].reshape(len(columns), 2)
+    for (city, close), column, title, limit in zip(panels, columns, titles,
+                                                   limits):
         norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit)
         shown = enough & data[column].notna()
-        # The CBD is small at city scale, so an inset zooms in on it and
-        # the ring (top left, over New Jersey, where the map is empty)
-        inset = ax.inset_axes([-0.04, 0.42, 0.56, 0.58])
-        for target in [ax, inset]:
+        for target, width in [(city, 0.2), (close, 0.4)]:
             data[shown].plot(column=column, cmap=DIVERGING, norm=norm,
-                             ax=target, edgecolor="white", linewidth=0.2)
+                             ax=target, edgecolor="white", linewidth=width)
             data[~shown].plot(ax=target, color=TOO_FEW_COLOUR,
-                              edgecolor="white", linewidth=0.2,
+                              edgecolor="white", linewidth=width,
                               hatch="////")
             outline.boundary.plot(ax=target, color="black", linewidth=1.0)
             target.set_xticks([])
             target.set_yticks([])
-        inset.set_xlim(zoom[0], zoom[2])
-        inset.set_ylim(zoom[1], zoom[3])
-        inset.set_aspect("equal")
-        inset.grid(False)
-        for spine in inset.spines.values():
-            spine.set_visible(True)
-            spine.set_color("#52514e")
-        ax.indicate_inset_zoom(inset, edgecolor="#52514e", alpha=1)
-        ax.set_axis_off()
-        ax.set_title(title)
+            target.set_axis_off()
+        # The box on the city panel is the area panel (b) enlarges
+        city.add_patch(mpatches.Rectangle(
+            (zoom[0], zoom[1]), zoom[2] - zoom[0], zoom[3] - zoom[1],
+            fill=False, edgecolor="#52514e", linewidth=0.8))
+        close.set_xlim(zoom[0], zoom[2])
+        close.set_ylim(zoom[1], zoom[3])
+        close.set_aspect("equal")
+        _annotate_zones(city, data, city_labels or {})
+        _annotate_zones(close, data, zoom_labels or {})
+        city.set_title(f"(a) {title}")
+        close.set_title("(b) The tolled zone up close")
         bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=DIVERGING),
-                           ax=ax, orientation="horizontal", shrink=0.8,
-                           extend="both", pad=0.01)
+                           ax=[city, close], orientation="horizontal",
+                           shrink=0.55, extend="both", pad=0.01)
         bar.set_label("Change, 2025 vs 2024 (%)")
         bar.outline.set_visible(False)
     handles = [
@@ -480,7 +552,72 @@ def zone_maps(shapes, labels, table, columns, titles, limits, too_few_label):
         mlines.Line2D([], [], color="black", linewidth=1.0,
                       label="Congestion relief zone (CBD)"),
     ]
-    fig.legend(handles=handles, loc="outside lower center", ncols=2)
+    fig.legend(handles=handles, loc="outside lower center",
+               ncols=2 * len(columns))
+    return fig
+
+
+def zone_scatter(table, labels, annotate=None, sizes=(4, 70)):
+    """Each zone's change in pickups against its change in earnings.
+
+    The two maps show one change each, so the relationship between them has
+    to be read across the pair. Here both are on one pair of axes, with the
+    zones that touch the tolled area coloured, which is the comparison the
+    text makes.
+
+    Args:
+        table (pandas.DataFrame): One service's rows of
+            ``explore.zone_change``. Only rows with ``enough_trips`` are
+            drawn.
+        labels (pandas.DataFrame): Zone labels, for each zone's name and
+            group.
+        annotate (dict, optional): Zone name -> (dx, dy) offset in points
+            for the zones to label.
+        sizes (tuple): Marker area for the smallest and largest zone, so
+            the busy zones read as the heavy ones.
+
+    Returns:
+        matplotlib.figure.Figure: The figure.
+    """
+    named = labels.set_index("LocationID")[["Zone", "zone_group"]]
+    rows = (table[table["enough_trips"]].join(named, on="PULocationID")
+            .dropna(subset=["change_pct", "eph_change_pct"]))
+    # Marker area grows with the zone's pickups before the toll, so a
+    # thinly used zone can't look as important as Midtown
+    daily = rows["daily_before"].to_numpy()
+    area = sizes[0] + (sizes[1] - sizes[0]) * (np.sqrt(daily)
+                                               / np.sqrt(daily.max()))
+    fig, ax = plt.subplots(figsize=(3.1, 2.8), layout="constrained")
+    ax.axhline(0, color="#c3c2b7", linewidth=0.8)
+    ax.axvline(0, color="#c3c2b7", linewidth=0.8)
+    # The control zones are the background the cordon is read against, so
+    # they are drawn first and fainter
+    for group, alpha in [("control", 0.55), ("ring", 0.85), ("cbd", 0.85)]:
+        shown = rows["zone_group"] == group
+        ax.scatter(rows.loc[shown, "change_pct"],
+                   rows.loc[shown, "eph_change_pct"],
+                   s=area[shown.to_numpy()], color=ZONE_COLOURS[group],
+                   alpha=alpha, linewidth=0.4, edgecolor="white",
+                   label=ZONE_GROUP_NAMES[group])
+    for name, offset in (annotate or {}).items():
+        point = rows[rows["Zone"] == name]
+        if point.empty:
+            continue
+        ax.annotate(name, xy=(point["change_pct"].iloc[0],
+                              point["eph_change_pct"].iloc[0]),
+                    xytext=offset, textcoords="offset points", fontsize=9,
+                    color="#52514e",
+                    ha="left" if offset[0] >= 0 else "right",
+                    va="bottom" if offset[1] >= 0 else "top")
+    ax.set_xlabel("Change in pickups (%)")
+    ax.set_ylabel("Change in median earnings\nper engaged hour (%)")
+    ax.grid(axis="both")
+    handles, names = ax.get_legend_handles_labels()
+    # The lower left corner holds points, so the legend gets a background
+    ax.legend(handles[::-1], names[::-1], loc="lower left",
+              handletextpad=0.2, borderpad=0.3, labelspacing=0.3,
+              markerscale=0.7, frameon=True, framealpha=0.9,
+              facecolor="white", edgecolor="none")
     return fig
 
 
@@ -502,32 +639,70 @@ def _text_colour(background):
     return "white" if on_white > on_black else "#0b0b0b"
 
 
-def band_day_heatmaps(tables, titles, limit, label):
+def _panel_scale(limit):
+    """Colour scale for one heatmap panel.
+
+    A number gives the usual diverging scale, -limit to +limit centred at
+    0. A ``(low, high)`` pair whose values have one sign gives a sequential
+    scale over that range instead: with every cell on one side of 0, half a
+    diverging scale is never drawn, and the panel uses colours a reader
+    can barely tell apart.
+
+    Args:
+        limit (float or tuple): Scale limit, or (low, high).
+
+    Returns:
+        tuple: (norm, colormap, colourbar extend).
+    """
+    if not isinstance(limit, (list, tuple)):
+        return (colors.TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit),
+                DIVERGING, "both")
+    low, high = limit
+    colormap = SEQUENTIAL_FALL if high <= 0 else SEQUENTIAL_RISE
+    return colors.Normalize(vmin=low, vmax=high), colormap, "min"
+
+
+def band_day_heatmaps(tables, titles, limits, labels):
     """Heatmaps of change by time band (rows) and day of week (columns).
+
+    Each panel gets its own colour scale when the panels are given
+    different limits or labels, because a scale wide enough for the
+    largest panel leaves a smaller one almost flat: the numbers are still
+    printed, but the colours stop carrying the pattern.
 
     Args:
         tables (list of pandas.DataFrame): Outputs of
             ``explore.relative_change`` or ``explore.band_day_table``.
         titles (list of str): Panel titles.
-        limit (float): Colour scale runs from -limit to +limit (%).
-        label (str): Colour bar label.
+        limits (float or list of float): Colour scale runs from -limit to
+            +limit (%), one limit for every panel or one for each.
+        labels (str or list of str): Colour bar label, shared or one for
+            each panel.
 
     Returns:
         matplotlib.figure.Figure: The figure.
     """
-    norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit)
-    fig, axes = plt.subplots(1, len(tables), figsize=(6.5, 2.8),
+    if not isinstance(limits, (list, tuple)):
+        limits = [limits] * len(tables)
+    if isinstance(labels, str):
+        labels = [labels] * len(tables)
+    shared = (len(set(map(str, limits))) == 1
+              and len(set(labels)) == 1)
+    height = 2.8 if shared else 3.0
+    fig, axes = plt.subplots(1, len(tables), figsize=(6.5, height),
                              sharey=True, layout="constrained",
                              squeeze=False)
-    for ax, table, title in zip(axes[0], tables, titles):
+    for ax, table, title, limit, label in zip(axes[0], tables, titles,
+                                              limits, labels):
+        norm, colormap, extend = _panel_scale(limit)
         values = table.to_numpy(dtype=float)
-        ax.imshow(values, cmap=DIVERGING, norm=norm, aspect="auto")
+        ax.imshow(values, cmap=colormap, norm=norm, aspect="auto")
         for (row, col), value in np.ndenumerate(values):
             if np.isnan(value):
                 continue
             ax.text(col, row, f"{value:+.0f}", ha="center", va="center",
                     fontsize=10,
-                    color=_text_colour(DIVERGING(norm(value))))
+                    color=_text_colour(colormap(norm(value))))
         ax.set_xticks(range(table.shape[1]),
                       [DAY_NAMES[d - 1] for d in table.columns])
         ax.set_yticks(range(table.shape[0]),
@@ -537,10 +712,18 @@ def band_day_heatmaps(tables, titles, limit, label):
         for spine in ax.spines.values():
             spine.set_visible(False)
         ax.set_title(title)
-    bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=DIVERGING),
-                       ax=axes[0].tolist(), extend="both", shrink=0.9)
-    bar.set_label(label)
-    bar.outline.set_visible(False)
+        if not shared:
+            bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=colormap),
+                               ax=ax, orientation="horizontal", shrink=0.9,
+                               extend=extend, pad=0.02)
+            bar.set_label(label)
+            bar.outline.set_visible(False)
+    if shared:
+        norm, colormap, extend = _panel_scale(limits[0])
+        bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=colormap),
+                           ax=axes[0].tolist(), extend=extend, shrink=0.9)
+        bar.set_label(labels[0])
+        bar.outline.set_visible(False)
     return fig
 
 

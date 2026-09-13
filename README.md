@@ -88,8 +88,8 @@ The notebook then uses only January and March of 2024 and 2025. `1`, `true` and 
 | 2 | External data: zone labels, the buffer ring, weather and holidays |
 | 3 | Clean the taxi data with PySpark and build the summary table |
 | 4 | Join weather and holidays onto the summary table. It comes after Section 3 because it needs the summary table. |
-| 5 | Explore the data and make maps: distributions before and after cleaning, what each rule removes per trip group, yellow vendor 7, monthly trips relative to control, maps of change by zone, change by time band and day, Uber/Lyft pickup waits and MTA speeds. Report figures are saved to `plots/` as PDF. |
-| 6 | Fit the models: difference-in-differences (headline, event study, placebo, trend and buffer-band checks, time bands) and a LightGBM forecast of the toll period (validation against a 52-week baseline, SHAP), then compare the two. Figure 4 is saved to `plots/`. |
+| 5 | Explore the data and make maps: distributions before and after cleaning, what each rule removes per trip group, yellow vendor 7, monthly trips relative to control, maps of change by zone and a scatter of the two changes together, change by time band and day, Uber/Lyft pickup waits and MTA speeds. Report figures are saved to `plots/` as PDF. |
+| 6 | Fit the models: difference-in-differences (headline, event study, placebo, trend and buffer-band checks, time bands) and a LightGBM forecast of the toll period (validation against a 52-week baseline, SHAP), then compare the two. Figure 5 is saved to `plots/`. |
 
 Sections 1–4 write `data/curated/zone_labels.csv`, `trip_summary.parquet` (11.5M rows) and `model_table.parquet` (the summary table with weather and holidays joined on), plus one parquet file per service and month in `summary_parts/`. Deleting a file in `data/curated/` makes the next run rebuild it.
 

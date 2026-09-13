@@ -32,6 +32,10 @@ PERIODS = {
 # the maps, because their percentage changes rest on too few trips
 MIN_DAILY_PICKUPS = 10
 
+# The pickup groups ``engaged_hour_by_group`` reports, coarsened from the
+# five zone groups of ``clean.ZONE_GROUPS``
+PICKUP_GROUPS = ["cbd", "ring", "control"]
+
 # Histogram ranges for the before/after cleaning plots: (start, stop, bin
 # width). Each range reaches past its cut-off in clean.py (5 hours, $500),
 # so the removed tail shows.
@@ -72,6 +76,14 @@ def add_period(table, column="date"):
 def _pct_change(before, after):
     """Percentage change from ``before`` to ``after`` (NaN if before is 0)."""
     return (after / before.where(before > 0) - 1) * 100
+
+
+def _coarse_pickup_group(column):
+    """Spark rule turning a fine pickup zone group into one of
+    ``PICKUP_GROUPS``, or null for zones 264 and 265."""
+    return (F.when(column == "cbd", "cbd")
+            .when(column.startswith("ring"), "ring")
+            .when(column.startswith("control"), "control"))
 
 
 def _coarse_trip_group(pickup, dropoff):
@@ -309,6 +321,83 @@ def zone_medians(trips):
             .toPandas())
 
 
+def engaged_hour_by_group(fhvhv):
+    """What an engaged hour buys in each pickup group, before and after.
+
+    An engaged hour is the time from pickup to drop-off, so earnings per
+    engaged hour rise if the same hour covers more ground. This puts the
+    parts of that on one row: the speed and distance of the trips
+    themselves, the earnings they pay, and how much of the per-hour figure
+    is missing. It tests the speed explanation on the same trips that
+    produced the earnings change, rather than on an outside average.
+
+    Medians are taken over every trip in the group (``percentile_approx``
+    with accuracy 1,000). Trips picked up in zones 264 and 265 have no
+    pickup group and are left out.
+
+    Args:
+        fhvhv (pyspark.sql.DataFrame): Output of ``clean.add_columns``
+            (HVFHV).
+
+    Returns:
+        pandas.DataFrame: One row per ``pickup_group`` and ``period``, with
+        ``trips``, ``shared_pct`` (trips sharing their driving time with
+        another trip, which have no engaged hour of their own),
+        ``eph_known_pct`` (trips whose earnings per engaged hour is known),
+        ``median_speed_mph``, ``median_trip_miles``,
+        ``median_trip_minutes`` and ``median_earnings_per_engaged_hour``.
+    """
+    # A null flag is not a shared ride, but ``clean.add_columns`` leaves
+    # those trips without an engaged hour too, so eph_known_pct is what
+    # the per-hour medians are actually computed on
+    shared = F.coalesce((F.col("shared_match_flag") == "Y").cast("int"),
+                        F.lit(0))
+    table = (fhvhv
+             .withColumn("pickup_group",
+                         _coarse_pickup_group(F.col("pickup_group")))
+             .withColumn("period", _period(F.col("date")))
+             .where(F.col("pickup_group").isNotNull()
+                    & F.col("period").isNotNull())
+             .groupBy("pickup_group", "period")
+             .agg(F.count("*").alias("trips"),
+                  (F.avg(shared) * 100).alias("shared_pct"),
+                  (F.count("earnings_per_engaged_hour") / F.count("*") * 100)
+                  .alias("eph_known_pct"),
+                  F.percentile_approx("speed_mph", 0.5, 1000)
+                  .alias("median_speed_mph"),
+                  F.percentile_approx("trip_miles", 0.5, 1000)
+                  .alias("median_trip_miles"),
+                  F.percentile_approx(F.col("trip_seconds") / 60, 0.5, 1000)
+                  .alias("median_trip_minutes"),
+                  F.percentile_approx("earnings_per_engaged_hour", 0.5, 1000)
+                  .alias("median_earnings_per_engaged_hour"))
+             .toPandas())
+    order = pd.MultiIndex.from_product([PICKUP_GROUPS, list(PERIODS)],
+                                       names=["pickup_group", "period"])
+    return table.set_index(["pickup_group", "period"]).reindex(order)
+
+
+def engaged_hour_change(table):
+    """Each measure of ``engaged_hour_by_group`` before and after the toll.
+
+    Args:
+        table (pandas.DataFrame): Output of ``engaged_hour_by_group``.
+
+    Returns:
+        pandas.DataFrame: One row per measure and pickup group, with
+        ``before``, ``after`` and ``change_pct``.
+    """
+    wide = table.unstack("period")
+    rows = [pd.DataFrame({"measure": measure,
+                          "pickup_group": wide.index,
+                          "before": wide[(measure, "before")].to_numpy(),
+                          "after": wide[(measure, "after")].to_numpy()})
+            for measure in table.columns]
+    changes = pd.concat(rows, ignore_index=True)
+    changes["change_pct"] = _pct_change(changes["before"], changes["after"])
+    return changes.set_index(["measure", "pickup_group"])
+
+
 def pickup_wait(fhvhv):
     """HVFHV pickup wait (request to pickup) by month and trip group.
 
@@ -378,6 +467,79 @@ def relative_trips(summary):
     ratios = ratios.reset_index()
     ratios["month"] = ratios["month"].dt.to_timestamp()
     return ratios
+
+
+def monthly_ratio(relative, service, group="treated"):
+    """One group's monthly ratio laid out as month of year by year.
+
+    The ratio has a season in it even after dividing by control trips, so
+    a month of the toll year is only worth reading against the same month
+    of the years before it.
+
+    Args:
+        relative (pandas.DataFrame): Output of ``relative_trips``.
+        service (str): ``"yellow"`` or ``"fhvhv"``.
+        group (str): ``"treated"`` or ``"ring"``.
+
+    Returns:
+        pandas.DataFrame: Rows are months of the year (1-12), columns
+        years, values the indexed ratio.
+    """
+    rows = relative[relative["service"] == service]
+    month_of_year = rows["month"].dt.month.rename("month_of_year")
+    return rows.pivot_table(index=month_of_year,
+                            columns=rows["month"].dt.year.rename("year"),
+                            values=group)
+
+
+def monthly_group_trips(summary, service):
+    """Trips a day by month and coarse group, and the year-on-year change.
+
+    Args:
+        summary (pandas.DataFrame): The summary table.
+        service (str): ``"yellow"`` or ``"fhvhv"``.
+
+    Returns:
+        pandas.DataFrame: One row per month, with a column of trips a day
+        for each coarse group and a ``_change_pct`` column giving the
+        change from the same month a year earlier.
+    """
+    rows = summary[summary["service"] == service]
+    months = rows["date"].dt.to_period("M").rename("month")
+    table = (rows.groupby([months, "trip_group_coarse"])["trips"].sum()
+             .unstack("trip_group_coarse")[COARSE_TRIP_GROUPS])
+    table = table.div(rows.groupby(months)["date"].nunique(), axis=0)
+    for group in COARSE_TRIP_GROUPS:
+        table[f"{group}_change_pct"] = _pct_change(table[group].shift(12),
+                                                   table[group])
+    table.index = table.index.to_timestamp()
+    return table
+
+
+def zone_correlation(changes, labels):
+    """Spearman correlation of a zone's two changes, overall and by group.
+
+    Args:
+        changes (pandas.DataFrame): One service's rows of ``zone_change``.
+        labels (pandas.DataFrame): Zone labels, for ``zone_group``.
+
+    Returns:
+        pandas.DataFrame: ``zones`` and ``spearman`` for all the zones
+        shown and for each zone group.
+    """
+    rows = (changes[changes["enough_trips"]]
+            .join(labels.set_index("LocationID")["zone_group"],
+                  on="PULocationID")
+            .dropna(subset=["change_pct", "eph_change_pct"]))
+    groups = {"all shown": rows}
+    for group in ["cbd", "ring", "control"]:
+        groups[group] = rows[rows["zone_group"] == group]
+    return pd.DataFrame(
+        [{"group": name,
+          "zones": len(part),
+          "spearman": part["change_pct"].corr(part["eph_change_pct"],
+                                              method="spearman")}
+         for name, part in groups.items()]).set_index("group")
 
 
 def group_change(summary, by="trip_group"):
