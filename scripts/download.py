@@ -248,12 +248,12 @@ def tlc_path(service, year, month):
     """Return the local path of one TLC monthly file.
 
     Args:
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         year (int): Year.
         month (int): Month (1-12).
 
     Returns:
-        Path: e.g. ``data/raw/tlc/yellow/yellow_tripdata_2023-01.parquet``.
+        Path: e.g. ``data/raw/tlc/fhvhv/fhvhv_tripdata_2023-01.parquet``.
     """
     return (config.RAW_DIR / "tlc" / service
             / f"{service}_tripdata_{year}-{month:02d}.parquet")
@@ -266,7 +266,7 @@ def download_tlc(months, services=None):
         months (list of tuple): (year, month) pairs, usually
             ``config.months_to_process()``.
         services (list of str, optional): Services to download. Defaults to
-            ``config.SERVICES`` (yellow taxi and High Volume FHV).
+            ``config.SERVICES`` (High Volume FHV).
 
     Returns:
         list of Path: The local files, in service then month order.

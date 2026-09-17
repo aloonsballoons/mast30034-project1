@@ -85,7 +85,7 @@ def did_data(table, service):
 
     Args:
         table (pandas.DataFrame): The model table (Section 4).
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
 
     Returns:
         pandas.DataFrame: The rows with the fixed effect ids ``cell`` and
@@ -243,7 +243,7 @@ def event_study(table, service):
 
     Args:
         table (pandas.DataFrame): The model table.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
 
     Returns:
         pandas.DataFrame: ``group``, ``month`` (first day), ``effect_pct``,
@@ -372,7 +372,7 @@ def validate(table, service):
 
     Args:
         table (pandas.DataFrame): The model table.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
 
     Returns:
         tuple: (pandas.DataFrame, pandas.DataFrame) - MAE, RMSE and WMAPE
@@ -402,6 +402,39 @@ def validate(table, service):
                 predicted=predicted)
     scores = pd.DataFrame(scores).T.rename_axis(["target", "forecast"])
     return scores, rows
+
+
+def forecast_placebo(table, service):
+    """Model 2's effect in the validation year, which had no toll.
+
+    The same split as ``validate``: train on the first year, forecast the
+    second. Because that year holds no toll, every group's forecast gap
+    should be the same gap, and the effect relative to control trips
+    should be near 0. It is Model 2's answer to Model 1's placebo fit, and
+    the only reading of how far from 0 this model lands when there is
+    nothing to find.
+
+    Args:
+        table (pandas.DataFrame): The model table.
+        service (str): ``"fhvhv"``.
+
+    Returns:
+        pandas.DataFrame: ``gap_pct`` and ``effect_pct`` by ``target`` and
+        trip group, as ``forecast_effect`` gives them for the toll period.
+    """
+    data = _service_rows(table, service, INPUTS + [
+        "trip_group", "trip_group_coarse"] + list(OBJECTIVES))
+    first, second = sorted(data["date"].dt.year.unique())[:2]
+    train, test = (data["date"].dt.year == year for year in (first, second))
+    effects = {}
+    for target in OBJECTIVES:
+        inputs = features(data, train, target)
+        model = _fit(inputs[train], data.loc[train, target], target)
+        rows = data.loc[test, ["trip_group", "trip_group_coarse"]].assign(
+            actual=data.loc[test, target],
+            predicted=model.predict(inputs[test]))
+        effects[target] = forecast_effect(rows)
+    return pd.concat(effects, names=["target"])
 
 
 def zone_errors(table, rows, service, n=8):
@@ -441,14 +474,14 @@ def forecast(table, service, target):
 
     Args:
         table (pandas.DataFrame): The model table.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         target (str): ``"trips"`` or ``"total_earnings"``.
 
     Returns:
         tuple: (lightgbm.LGBMRegressor, pandas.DataFrame, pandas.DataFrame)
         - the model, its inputs for the toll-period rows, and those rows'
-        ``trip_group``, ``trip_group_coarse``, ``time_band``, ``actual``
-        and ``predicted`` values.
+        ``PULocationID``, ``trip_group``, ``trip_group_coarse``,
+        ``time_band``, ``actual`` and ``predicted`` values.
     """
     data = _service_rows(table, service, INPUTS + [
         "trip_group", "trip_group_coarse", target])
@@ -456,8 +489,8 @@ def forecast(table, service, target):
     after = data["date"] >= pd.Timestamp(config.TOLL_START_DATE)
     inputs = features(data, train, target)
     model = _fit(inputs[train], data.loc[train, target], target)
-    rows = data.loc[after, ["trip_group", "trip_group_coarse",
-                            "time_band"]].assign(
+    rows = data.loc[after, ["PULocationID", "trip_group",
+                            "trip_group_coarse", "time_band"]].assign(
         actual=data.loc[after, target],
         predicted=model.predict(inputs[after]))
     return model, inputs[after], rows
@@ -498,6 +531,63 @@ def forecast_effect(rows, group="trip_group", by=()):
     table["gap_pct"] = (table["ratio"] - 1) * 100
     table["effect_pct"] = (table["ratio"] / control_ratio - 1) * 100
     return table[["gap_pct", "effect_pct"]]
+
+
+def zone_band_gaps(forecasts, labels, n=15):
+    """Model 2's toll-period gap for every pickup zone and time band.
+
+    ``forecast_effect`` answers the modelling question: how far did a trip
+    group move relative to control trips? This answers the driver's
+    question instead: in this pickup zone, in this time band, how do the
+    toll period's trips and total earnings compare with the no-toll
+    forecast? That is ``gap_pct``. ``effect_pct`` divides out the band's
+    citywide control gap as ``forecast_effect`` does, so it is on Model 1's
+    scale and comparable with Table 2, but it is the gap itself a driver
+    choosing a zone is looking at.
+
+    Args:
+        forecasts (dict): Target -> third output of ``forecast``, for one
+            service.
+        labels (pandas.DataFrame): Output of ``zones.build_zone_labels``.
+        n (int): How many zones to mark in ``shown``, the busiest by
+            toll-period trips.
+
+    Returns:
+        pandas.DataFrame: One row per pickup zone and time band, busiest
+        zone first, with the zone's ``Zone`` name and ``zone_group``, its
+        toll-period ``trips`` in the band and ``zone_trips`` over all
+        bands, ``gap_pct`` and ``effect_pct`` for each target, and
+        ``shown`` for the ``n`` busiest zones.
+    """
+    keys = ["PULocationID", "time_band"]
+    parts = {}
+    for target, rows in forecasts.items():
+        sums = rows.groupby(keys, observed=True)[["actual", "predicted"]].sum()
+        control = rows[rows["trip_group_coarse"] == "control"]
+        bands = control.groupby("time_band",
+                                observed=True)[["actual", "predicted"]].sum()
+        band_ratio = (bands["actual"] / bands["predicted"]).reindex(
+            sums.index.get_level_values("time_band")).to_numpy()
+        ratio = sums["actual"] / sums["predicted"]
+        if target == "trips":
+            parts["trips"] = sums["actual"]
+        parts[f"{target}_gap_pct"] = (ratio - 1) * 100
+        parts[f"{target}_effect_pct"] = (ratio / band_ratio - 1) * 100
+
+    table = pd.DataFrame(parts).reset_index().merge(
+        labels[["LocationID", "Zone", "zone_group"]].rename(
+            columns={"LocationID": "PULocationID"}), on="PULocationID",
+        how="left")
+    zone_trips = table.groupby("PULocationID")["trips"].sum()
+    table["zone_trips"] = table["PULocationID"].map(zone_trips)
+    table["shown"] = table["PULocationID"].isin(
+        zone_trips.nlargest(n).index)
+    return table.sort_values(["zone_trips", "PULocationID", "time_band"],
+                             ascending=[False, True, True])[
+        ["PULocationID", "Zone", "zone_group", "time_band", "trips",
+         "zone_trips", "shown"]
+        + [column for column in parts if column != "trips"]
+    ].reset_index(drop=True)
 
 
 def shap_importance(model, inputs, n=20_000):

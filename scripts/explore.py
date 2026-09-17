@@ -3,7 +3,7 @@
 Two kinds of function:
 
 1. Spark checks on trip-level data (``removals_by_group``,
-   ``yellow_vendors``, ``histograms``, ``zone_medians``, ``pickup_wait``).
+   ``histograms``, ``zone_medians``, ``pickup_wait``).
    Each makes one pass over the data it is given and returns a small pandas
    table.
 2. pandas tables built from the summary table. They compare the toll
@@ -123,7 +123,7 @@ def removals_by_group(data, service, spark, labels):
 
     Args:
         data (pyspark.sql.DataFrame): Raw trips with ``add_trip_time``.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         spark (SparkSession): Active session.
         labels (pandas.DataFrame): Zone labels.
 
@@ -170,16 +170,13 @@ def removal_shares(table):
 def add_money_columns(data, service):
     """Add the columns ``HIST_SPECS`` bins.
 
-    ``money`` is ``fare_amount`` (yellow) or ``driver_pay`` (HVFHV), and
-    ``money_per_hour`` is money divided by trip hours. Both exist before
-    and after cleaning, so the raw and cleaned histograms measure the same
-    thing. (The earnings per engaged hour used later also adds the driver
-    surcharges to yellow fares, which can only be worked out on clean
-    rows.)
+    ``money`` is ``driver_pay``, and ``money_per_hour`` is money divided by
+    trip hours. Both exist before and after cleaning, so the raw and
+    cleaned histograms measure the same thing.
 
     Args:
         data (pyspark.sql.DataFrame): Trips with ``add_trip_time``.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
 
     Returns:
         pyspark.sql.DataFrame: ``data`` with ``trip_minutes``, ``money``
@@ -204,63 +201,9 @@ def null_shares(nulls):
         nulls.
     """
     year = pd.to_datetime(nulls["file_month"]).dt.year.rename("year")
-    counts = (nulls.select_dtypes("number").drop(columns=["VendorID",
-                                                          "payment_type"],
-                                                 errors="ignore")
-              .groupby(year).sum())
+    counts = nulls.select_dtypes("number").groupby(year).sum()
     shares = counts.drop(columns="rows").div(counts["rows"], axis=0) * 100
     return shares.loc[:, (shares > 0).any()]
-
-
-def yellow_vendors(yellow, spark, labels):
-    """Raw yellow rows by month, vendor and pickup zone group.
-
-    Also counts the rows whose drop-off time is at or before the pickup
-    time, which the cleaning removes.
-
-    Args:
-        yellow (pyspark.sql.DataFrame): Raw yellow trips with
-            ``add_trip_time``.
-        spark (SparkSession): Active session.
-        labels (pandas.DataFrame): Zone labels.
-
-    Returns:
-        pandas.DataFrame: ``file_month``, ``VendorID``, ``pickup_group``
-        (missing for zones 264 and 265), ``rows`` and ``zero_time``.
-    """
-    return (_join_groups(yellow, spark, labels)
-            .groupBy("file_month", "VendorID", "pickup_group")
-            .agg(F.count("*").alias("rows"),
-                 F.sum((F.col("trip_seconds") <= 0).cast("int"))
-                 .alias("zero_time"))
-            .toPandas())
-
-
-def vendor_table(vendors, vendor, year):
-    """One vendor's rows by month, and where its trips start.
-
-    Args:
-        vendors (pandas.DataFrame): Output of ``yellow_vendors``.
-        vendor (int): ``VendorID`` to look at.
-        year (int): Year for the pickup group shares.
-
-    Returns:
-        tuple: (monthly ``rows``, ``zero_time`` and ``share_of_yellow``
-        (%) for the vendor; pickup group shares (%) in ``year`` for the
-        vendor against all yellow rows).
-    """
-    vendors = vendors.assign(file_month=pd.to_datetime(vendors["file_month"]))
-    mine = vendors[vendors["VendorID"] == vendor]
-    monthly = mine.groupby("file_month")[["rows", "zero_time"]].sum()
-    all_rows = vendors.groupby("file_month")["rows"].sum()
-    monthly["share_of_yellow"] = monthly["rows"] / all_rows * 100
-    groups = pd.DataFrame({
-        name: table[table["file_month"].dt.year == year]
-        .groupby("pickup_group", dropna=False)["rows"].sum()
-        for name, table in [(f"vendor_{vendor}", mine),
-                            ("all_yellow", vendors)]})
-    groups = groups / groups.sum() * 100
-    return monthly, groups
 
 
 def histograms(data, specs):
@@ -478,7 +421,7 @@ def monthly_ratio(relative, service, group="treated"):
 
     Args:
         relative (pandas.DataFrame): Output of ``relative_trips``.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         group (str): ``"treated"`` or ``"ring"``.
 
     Returns:
@@ -497,7 +440,7 @@ def monthly_group_trips(summary, service):
 
     Args:
         summary (pandas.DataFrame): The summary table.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
 
     Returns:
         pandas.DataFrame: One row per month, with a column of trips a day
@@ -620,7 +563,7 @@ def relative_change(changes, service, group="treated", base="control"):
 
     Args:
         changes (pandas.DataFrame): Output of ``band_day_change``.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         group (str): Trip group to compare.
         base (str): Trip group to compare against.
 
@@ -640,7 +583,7 @@ def band_day_table(changes, service, group):
 
     Args:
         changes (pandas.DataFrame): Output of ``band_day_change``.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         group (str): Trip group.
 
     Returns:

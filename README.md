@@ -2,7 +2,7 @@
 
 MAST30034 Applied Data Science, Project 1.
 
-On 5 January 2025 New York started charging a toll to enter Manhattan below 60th Street. This project measures how the toll changed yellow taxi and high volume for-hire vehicle (Uber/Lyft) trips and driver earnings, and turns the results into advice on where and when drivers should work.
+On 5 January 2025 New York started charging a toll to enter Manhattan below 60th Street. This project measures how the toll changed high volume for-hire vehicle (Uber/Lyft) trips and driver earnings, and turns the results into advice on where and when drivers should work.
 
 Timeline: January 2023 to December 2025 (24 months before the toll, 12 months after).
 
@@ -19,7 +19,7 @@ MAST30034-Project1/
 │   ├── clean.py            Data checks, cleaning rules, new columns, summary table
 │   ├── external.py         Weather, holidays, and the joins
 │   ├── explore.py          Tables behind the exploration and maps (Section 5)
-│   ├── models.py           Difference-in-differences and LightGBM models (Section 6)
+│   ├── models.py           Difference-in-differences and LightGBM models (Sections 6 and 7)
 │   ├── plots.py            Plotting helpers
 │   └── style.mplstyle      The shared style every figure uses
 ├── data/                   Created by the notebook on the first run, not committed
@@ -28,7 +28,8 @@ MAST30034-Project1/
 ├── plots/                  Figures saved by the notebook
 ├── report/                 LaTeX report, built separately from the notebook
 │   ├── main.tex
-│   └── references.bib
+│   ├── references.bib
+│   └── main.pdf            The built report (kept; the other build files are not)
 └── requirements.txt        Pinned packages for the virtual environment
 ```
 
@@ -66,10 +67,6 @@ jupyter lab main.ipynb
 
 `scripts/config.py` sets `PYSPARK_PYTHON` to the notebook's Python, so Spark doesn't pick up another Python (such as Anaconda's) by mistake.
 
-On an Apple silicon laptop with Java 21, Sections 1–4 (after the download) took about 35 minutes when every monthly summary part in `data/curated/summary_parts/` had to be built, and about 17 minutes when the saved parts were reused. Section 5 adds about 19 minutes, mostly the Spark passes over every Uber/Lyft trip for the zone medians and pickup waits, and Section 6 about 20 minutes (28 difference-in-differences fits, 8 LightGBM fits and one Spark pass for the 2024 median earnings). A full run with saved parts takes about an hour; the full run of 19 September 2026, which rebuilt every part, took 82 minutes. A quick run takes about 5 minutes.
-
-Spark runs in local mode with 2 GB of memory by default. On 19 September 2026 a full run ran out of Spark memory in Section 3.3 at 2 GB (earlier runs had passed) and completed with 4 GB, so use `SPARK_DRIVER_MEMORY=4g` for full runs. To give it more, set `SPARK_DRIVER_MEMORY` (for example `export SPARK_DRIVER_MEMORY=6g`) before starting Jupyter. Spark's scratch files go to `spark-tmp/` in the repository root (not committed).
-
 ### Quick run
 
 Processing all 36 months takes a while, on top of the first download. To check that the notebook runs end to end on a small slice of the data instead, set `QUICK_RUN` in the environment when starting Jupyter:
@@ -88,10 +85,11 @@ The notebook then uses only January and March of 2024 and 2025. `1`, `true` and 
 | 2 | External data: zone labels, the buffer ring, weather and holidays |
 | 3 | Clean the taxi data with PySpark and build the summary table |
 | 4 | Join weather and holidays onto the summary table. It comes after Section 3 because it needs the summary table. |
-| 5 | Explore the data and make maps: distributions before and after cleaning, what each rule removes per trip group, yellow vendor 7, monthly trips relative to control, maps of change by zone and a scatter of the two changes together, change by time band and day, Uber/Lyft pickup waits and MTA speeds. Report figures are saved to `plots/` as PDF. |
-| 6 | Fit the models: difference-in-differences (headline, event study, placebo, trend and buffer-band checks, time bands) and a LightGBM forecast of the toll period (validation against a 52-week baseline, SHAP), then compare the two. Figure 5 is saved to `plots/`. |
+| 5 | Explore the data and make maps: distributions before and after cleaning, what each rule removes per trip group, monthly trips relative to control, maps of change by zone and a scatter of the two changes together, change by time band and day, Uber/Lyft pickup waits, and what an engaged hour buys (trip speed, distance and pay, against the MTA's CBD speeds). The report's three figures are saved here to `plots/` as PDF: `fig2_zone_map`, `fig3_zone_scatter` and `fig4_band_day`. |
+| 6 | Fit the models: difference-in-differences (headline, event study, placebo, trend and buffer-band checks, time bands, and the headline in dollars an hour) and a LightGBM forecast of the toll period (validation against a 52-week baseline, a placebo read of the no-toll validation year, SHAP), then compare the two. No figures; the model table is the report's. |
+| 7 | Recommendations: read Section 6.7's forecast by pickup zone and time band, so a driver can compare a zone and shift against the year the toll never happened in. |
 
-Sections 1–4 write `data/curated/zone_labels.csv`, `trip_summary.parquet` (11.5M rows) and `model_table.parquet` (the summary table with weather and holidays joined on), plus one parquet file per service and month in `summary_parts/`. Deleting a file in `data/curated/` makes the next run rebuild it.
+Sections 1–4 write `data/curated/zone_labels.csv`, `trip_summary.parquet` (5.9M rows) and `model_table.parquet` (the summary table with weather and holidays joined on), plus one parquet file per month in `summary_parts/`. Section 7 writes `driver_heatmap.csv`, the zone-by-time-band table the report's recommendations rest on. Deleting a file in `data/curated/` makes the next run rebuild it.
 
 The external data is prepared before the taxi data is cleaned, because the cleaning step needs the zone labels. The report is built separately from `report/main.tex`.
 

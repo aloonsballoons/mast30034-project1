@@ -1,12 +1,9 @@
 """Start Spark and read the raw TLC files into one consistent schema.
 
 The monthly files don't all share a schema. January 2023 stores the zone IDs
-and ``VendorID`` as int64 (int32 afterwards) and yellow ``passenger_count``
-and ``RatecodeID`` as double. From February 2023 the yellow column
-``airport_fee`` is spelled ``Airport_fee``, and ``cbd_congestion_fee`` only
-exists from 2025. Reading every file at once would fail or mix types, so
-each month is read, renamed and cast on its own, then the months are
-stacked.
+as int64 (int32 afterwards), and ``cbd_congestion_fee`` only exists from
+2025. Reading every file at once would fail or mix types, so each month is
+read and cast on its own, then the months are stacked.
 """
 
 import os
@@ -16,25 +13,8 @@ from pyspark.sql import SparkSession, functions as F
 from scripts import config
 from scripts.download import tlc_path
 
-# Columns kept from each service, with the type every month is cast to.
+# Columns kept from the service, with the type every month is cast to.
 # Everything else in the raw files is dropped at the first step.
-YELLOW_COLUMNS = {
-    "VendorID": "int",
-    "tpep_pickup_datetime": "timestamp_ntz",
-    "tpep_dropoff_datetime": "timestamp_ntz",
-    "passenger_count": "int",
-    "trip_distance": "double",
-    "RatecodeID": "int",
-    "PULocationID": "int",
-    "DOLocationID": "int",
-    "payment_type": "int",
-    "fare_amount": "double",
-    "extra": "double",
-    "congestion_surcharge": "double",
-    "airport_fee": "double",
-    "cbd_congestion_fee": "double",
-}
-
 FHVHV_COLUMNS = {
     "hvfhs_license_num": "string",
     "request_datetime": "timestamp_ntz",
@@ -48,11 +28,10 @@ FHVHV_COLUMNS = {
     "shared_match_flag": "string",
 }
 
-COLUMNS = {"yellow": YELLOW_COLUMNS, "fhvhv": FHVHV_COLUMNS}
+COLUMNS = {"fhvhv": FHVHV_COLUMNS}
 
-# The pickup and drop-off time columns have different names in each service
+# The pickup and drop-off time columns of the service
 TIME_COLUMNS = {
-    "yellow": ("tpep_pickup_datetime", "tpep_dropoff_datetime"),
     "fhvhv": ("pickup_datetime", "dropoff_datetime"),
 }
 
@@ -99,7 +78,7 @@ def read_month(spark, service, year, month):
 
     Args:
         spark (SparkSession): Active session.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         year (int): Year.
         month (int): Month (1-12).
 
@@ -107,7 +86,7 @@ def read_month(spark, service, year, month):
         pyspark.sql.DataFrame: The month's rows.
     """
     raw = spark.read.parquet(str(tlc_path(service, year, month)))
-    # Match column names without caring about case (airport_fee/Airport_fee)
+    # Match column names without caring about case
     names = {name.lower(): name for name in raw.columns}
     columns = []
     for name, dtype in COLUMNS[service].items():
@@ -126,7 +105,7 @@ def read_service(spark, service, months):
 
     Args:
         spark (SparkSession): Active session.
-        service (str): ``"yellow"`` or ``"fhvhv"``.
+        service (str): ``"fhvhv"``.
         months (list of tuple): (year, month) pairs.
 
     Returns:

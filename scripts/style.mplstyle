@@ -12,7 +12,7 @@
 #   blindness, so figures with 3 or fewer series need nothing else.
 #   With 4 or more, also label the lines directly or use different line styles.
 #   Maps and heatmaps of change use a perceptually uniform diverging scale
-#   centred at 0: blue (fall) - light grey (no change) - red (rise). Use
+#   centred at 0: red (fall) - light grey (no change) - blue (rise). Use
 #   cmap=plots.DIVERGING with matplotlib.colors.TwoSlopeNorm(vcenter=0).
 #   Don't use matplotlib's "RdBu_r" or "coolwarm": neither is uniform.
 

@@ -47,8 +47,9 @@ TOLL_START_DATE = date(2025, 1, 5)
 # Fake toll date for the placebo test on 2023-2024 data
 PLACEBO_DATE = date(2024, 1, 5)
 
-# TLC services used in the project, keyed by the prefix of their file names
-SERVICES = ["yellow", "fhvhv"]
+# TLC services used in the project, keyed by the prefix of their file names.
+# Only high volume for-hire vehicle (Uber/Lyft) trips are analysed.
+SERVICES = ["fhvhv"]
 
 # ---------------------------------------------------------------------------
 # Quick run
