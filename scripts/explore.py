@@ -19,8 +19,9 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 from scripts import config
-from scripts.clean import (COARSE_TRIP_GROUPS, TIME_BAND_ORDER, TIME_COLUMNS,
-                           UNKNOWN_ZONES, _money, rules)
+from scripts.clean import (COARSE_TRIP_GROUPS, MONEY_COLUMN,
+                           TIME_BAND_ORDER, TIME_COLUMNS, UNKNOWN_ZONES,
+                           rules)
 
 # The toll period and the same dates a year earlier
 PERIODS = {
@@ -176,13 +177,14 @@ def add_money_columns(data, service):
 
     Args:
         data (pyspark.sql.DataFrame): Trips with ``add_trip_time``.
-        service (str): ``"fhvhv"``.
+        service (str): ``"fhvhv"``. Unused, so that every step in this
+            module takes the same pair.
 
     Returns:
         pyspark.sql.DataFrame: ``data`` with ``trip_minutes``, ``money``
         and ``money_per_hour`` added.
     """
-    money = F.col(_money(service))
+    money = F.col(MONEY_COLUMN)
     return (data
             .withColumn("trip_minutes", F.col("trip_seconds") / 60)
             .withColumn("money", money)

@@ -18,6 +18,16 @@
 \usepackage{booktabs}
 \usepackage{placeins}
 \usepackage{wrapfig}
+% tighten the heading skips only; margins, font size and parskip
+% are untouched, and this buys about a third of a page
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.6ex plus .2ex}{0.9ex plus .1ex}
+\titlespacing*{\subsection}{0pt}{1.4ex plus .2ex}{0.7ex plus .1ex}
+% the zone-group key for Figure 4, matching scripts/plots.py
+\usepackage{xcolor}
+\definecolor{cbdblue}{HTML}{2A78D6}
+\definecolor{ringorange}{HTML}{EB6834}
+\definecolor{controlgrey}{HTML}{9A998F}
 % let a tall float share a page with text,
 % and keep float separation tight so a figure costs its own height only
 \renewcommand{\topfraction}{0.92}
@@ -42,36 +52,39 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% the '%' symbol denotes comments
 
 % Begin document creation
-\title{\textbf{Congestion Pricing and the Engaged Hour} \\ Ride-hail trips and driver earnings in New York's first tolled year}
+% pull the title block up towards the top margin (spacing only; margins and font size untouched)
+\title{\vspace{-2.5em}\textbf{Congestion Pricing and the Engaged Hour} \\ Ride-hail trips and driver earnings in New York's first tolled year}
 \author{
 Alina Noor \\
 Student ID: 1369153 \\
-% TODO before submitting: append the submission commit, i.e. .../tree/<full commit sha>
-\href{https://github.com/aloonsballoons/mast30034-project1}{Github repo with commit}
+% To pin the submission to one commit, put .../tree/<full commit sha> in the URL below
+\href{https://github.com/aloonsballoons/mast30034-project1}{GitHub repository}
 }
+
+\date{19 September 2026}
 
 \begin{document}
 \maketitle
 
 \section{Introduction}
 \label{sec:intro}
-On 5 January 2025 New York became the first city in the United States to toll drivers for entering its downtown, and the boundary it drew runs through the busiest taxi market in the country. Every trip touching Manhattan below 60th Street now carries a flat \$1.50 charge on the passenger's bill \cite{mtacbdzones}. For the drivers working inside that boundary the toll raises two questions to settle before the next shift: how much of the work in the zone is left, and what does an hour of it pay? This report answers both from the trip records of the toll's first year and turns the answers into advice on where and when to drive.
+On 5 January 2025 New York became the first city in the United States to toll drivers for entering its downtown, and the boundary it drew runs through the busiest taxi market in the country. Every trip touching Manhattan below 60th Street now carries a flat \$1.50 charge on the passenger's bill \cite{mtacbdzones}. For the drivers inside that boundary the toll raises two questions to settle before the next shift: how much of the work in the zone is left, and what does an hour of it pay? This report answers both from the toll's first year of trip records, and turns the answers into advice on where and when to drive.
 
-\textbf{Target audience.} The report is written for the HVFHV drivers who work Manhattan, and for the fleet and base managers who place cars for them. The charge is billed to the passenger, so a driver's stake in it is the demand and the pay rate it leaves behind, and the levers a driver holds are where a shift starts and which hours it covers. Every result below is therefore reported by trip group, pickup zone and time band.
+\textbf{Target audience.} The HVFHV drivers who work Manhattan. They take the platform's fares as given, so the only levers they hold are where a shift starts and which hours it covers. The charge is billed to the passenger, so a driver's stake in it is the demand and the pay rate it leaves behind. Every result below is therefore reported by trip group, pickup zone and time band.
 
-\textbf{Taxi type, timeline and shape.} The study uses every high volume for-hire vehicle (HVFHV, the Uber and Lyft services) trip record of January 2023 to December 2025: 715,550,152 rows across 24 to 25 columns, about 16\,GB in 36 monthly files \cite{tlctripdata}. HVFHV carries both the charge and the volume, and its records report driver pay directly, which an earnings question needs. Green taxis are barred from street hails throughout the tolled area \cite{tlcgreen}, and the remaining for-hire vehicle records report neither fare nor driver pay \cite{tlcfhvdict}, so neither can answer it. The window is built around the toll date: it opens in January 2023, late enough for the pandemic recovery in travel to have settled, closes at the end of December 2025 so the toll year holds every season, and leaves the 24 pre-toll months a placebo year and a month-by-month trend test both need.
+\textbf{Taxi type, timeline and shape.} Every high volume for-hire vehicle (HVFHV, the Uber and Lyft services) trip record of January 2023 to December 2025: 715,550,152 rows across 24 to 25 columns, about 16\,GB in 36 monthly files \cite{tlctripdata}. HVFHV carries both the charge and the volume, and reports driver pay directly, which an earnings question needs; green taxis are barred from street hails in the tolled area \cite{tlcgreen}, and the remaining for-hire records report neither fare nor pay \cite{tlcfhvdict}. The window is built around the toll date. It opens late enough for the pandemic recovery to have settled and closes at the end of the toll year, so it holds every season and leaves the 24 pre-toll months that the placebo year and the trend test both need.
 
-\textbf{Attributes of interest.} A driver's takings come from the number of trips and what each engaged hour pays, so the study carries two outcomes: the count of trips, and the median \emph{earnings per engaged hour}, defined in Section~\ref{sec:taxidata}. Setting those two are the pickup and drop-off zone, which place a trip inside or outside the tolled area, the pickup time, which gives the date, day of week and time band, and the trip length, distance and speed, which say what an engaged hour buys and drive the outlier rules of Section~\ref{sec:preprocessing}. The HVFHV wait from request to pickup measures how busy drivers were between fares.
+\textbf{Attributes of interest.} A driver's takings come from the number of trips and what each engaged hour pays, so the study carries two outcomes: the count of trips, and the median \emph{earnings per engaged hour} of Section~\ref{sec:taxidata}. The pickup and drop-off zone place a trip inside or outside the tolled area, and the pickup time gives the date, day and time band. Trip length, distance and speed say what an engaged hour buys and drive the outlier rules of Section~\ref{sec:preprocessing}; the wait from request to pickup measures how busy drivers were between fares.
 
-\textbf{External data.} Five sources join the trip records. The MTA list of tolled zones \cite{mtacbdzones} is the only way to label a trip treated or control, and its monthly CBD speed series \cite{mtacbdspeeds} checks the mechanism behind the earnings result from outside the trip records, covering every vehicle including the ones between fares. The TLC zone lookup and shapefile \cite{tlczones} measure each zone's distance to the tolled area, and NOAA daily Central Park weather \cite{noaaghcnd} with the US federal holiday calendar \cite{opmholidays} control for the rain, snow and holidays that move demand across the whole city.
+\textbf{External data.} Five sources join the trip records. The MTA list of tolled zones \cite{mtacbdzones} is the only way to label a trip treated or control, and its monthly CBD speed series \cite{mtacbdspeeds} checks the earnings mechanism from outside the trip records, covering every vehicle including those between fares. The TLC zone lookup and shapefile \cite{tlczones} measure each zone's distance to the tolled area; NOAA Central Park weather \cite{noaaghcnd} and the federal holiday calendar \cite{opmholidays} control for the rain, snow and holidays that move demand citywide.
 
-\textbf{Assumptions.} A trip counts as \emph{treated} when either end is in the tolled zone: the records hold two zone IDs and no route, so a trip charged for passing through counts as control, which makes every gap reported below a conservative one. The charge is billed to the passenger and falls outside every earnings figure here, so an earnings result is a change in what the work pays. Earnings cover the engaged hour from pickup to drop-off; time spent cruising empty leaves no record and tips sit outside both services' pay columns, so a whole shift's takings lie beyond these data. Central Park weather stands in for the city. Every distribution, aggregate, map and model uses the full cleaned data with no subsampling, the one exception being the SHAP attribution of Section~\ref{sec:model2}, computed on a random 20,000 rows because its run time grows with the number of rows.
+\textbf{Assumptions.} A trip counts as \emph{treated} when either end is in the tolled zone: the records hold two zone IDs and no route, so a trip charged for passing through counts as control, making every gap below a conservative one. The charge falls outside every earnings figure here, so an earnings result is a change in what the work pays. Earnings cover the engaged hour from pickup to drop-off; cruising empty leaves no record and tips sit outside the pay column, so a whole shift's takings lie beyond these data. Central Park weather stands in for the city, and nothing is subsampled but the SHAP attribution of Section~\ref{sec:model2}, on 20,000 random rows because its run time grows with the row count.
 
-\textbf{Methodology.} The pipeline runs in PySpark, one month at a time: Section~\ref{sec:preprocessing} cleans the trips, gives each its zone group, time band and earnings, and aggregates them with the external sources into one summary table (5,940,320~$\times$~20). Section~\ref{sec:modelling} fits two contrasting models to it: a difference-in-differences regression, which removes confounders by design but has to assume the two groups would otherwise have moved together, and a LightGBM forecast trained on pre-toll months alone, which drops that assumption. Both report effects relative to control trips.
+\textbf{Methodology.} The pipeline runs in PySpark, one month at a time. Section~\ref{sec:preprocessing} cleans the trips, gives each its zone group, time band and earnings, and aggregates them with the external sources into one table (5,940,320~$\times$~20). Section~\ref{sec:modelling} fits two contrasting models to it: a difference-in-differences regression, which removes confounders by design but must assume the two groups would otherwise have moved together, and a LightGBM forecast trained on pre-toll months alone, which drops that assumption. Both report effects relative to control trips.
 
 \section{Preprocessing}
 \label{sec:preprocessing}
-The TLC receives trip records from the technology providers in each vehicle and makes no promise that they are accurate \cite{tlctripdata}, so every record is checked before use. All checks run on the full data in PySpark, one month at a time, in the six numbered steps summarised below and implemented in full, with the per-step row counts, in \texttt{scripts/clean.py}. Together they keep 694,437,031 rows of 715,550,152 (97.0\%).
+The TLC receives trip records from the technology providers in each vehicle and makes no promise that they are accurate \cite{tlctripdata}, so every record is checked before use. All checks run on the full data in PySpark, one month at a time, in the six numbered steps below, implemented in \texttt{scripts/clean.py} and shaped in Table~\ref{tab:prep}(a). Step 1 fixes the columns at 10 and every later step carries them, keeping 694,437,031 rows of the raw 715,550,152 (97.0\%).
 
 
 \subsection{Taxi trip data}
@@ -79,35 +92,74 @@ The TLC receives trip records from the technology providers in each vehicle and 
 \begin{itemize}[leftmargin=*, itemsep=1pt, topsep=2pt]
     \item \textbf{One schema, nulls kept (step 1).} Column types and names change during 2023, so each month is cast to one schema before stacking, keeping only the columns used later. Nothing is imputed at any step.
     \item \textbf{Impossible times (steps 2--3).} A pickup outside the file's month has a wrong date, and a drop-off at or before pickup gives no trip length.
-    \item \textbf{Unreliable driver pay (step 4).} The earnings outcome is driver pay after commission, excluding tips \cite{tlchvfhvdict}, so a trip recording zero or negative pay cannot carry one and is removed.
-    \item \textbf{Outliers and unknown ends (steps 5--6).} The caps remove trips under 1 minute or over 5 hours, over 100 miles, over 60 mph on average, or paying over \$500, each set from a full-data histogram where the tail turns into impossible values and each above the matching 99.9th percentile (2 hours, 54 miles, 48 mph, \$152). A distance of 0 marks an unmeasured trip, so it is kept with earnings unknown. Zones 264 and 265 have no shape \cite{tlczones}, so a trip with one end in them is kept only when the other end is in the tolled area, which alone makes it treated; no treated trip is removed here.
-    \item \textbf{Summary table.} Earnings are driver pay after commission; \emph{earnings per engaged hour} divides that by pickup-to-drop-off time, and is left unknown rather than imputed for a shared ride, whose hour is split with another trip, and for the unmeasured trips above (1.1 to 1.9\% of trips per group and period). Trips are summed per pickup zone $\times$ drop-off group $\times$ date $\times$ time band, medians over every trip and empty combinations kept as 0: 5,940,320~$\times$~14 rows holding all 694 million cleaned trips.
+    \item \textbf{Unreliable driver pay (step 4).} The earnings outcome is driver pay after commission, excluding tips \cite{tlchvfhvdict}, so a trip recording zero or negative pay cannot carry one.
+    \item \textbf{Outliers and unknown ends (steps 5--6).} Each cap in Table~\ref{tab:prep}(b) is read off a full-data histogram, in the tail where the values turn impossible and above the matching 99.9th percentile. A distance of 0 marks an unmeasured trip, kept with earnings unknown. Zones 264 and 265 have no shape \cite{tlczones}, so a trip with one end in them is kept only when the other end is in the tolled area, which alone makes it treated; no treated trip is removed here.
+    \item \textbf{Summary table.} \emph{Earnings per engaged hour} divides driver pay after commission by pickup-to-drop-off time. It is left unknown rather than imputed for a shared ride, whose hour is split with another trip, and for the unmeasured trips above (1.1 to 1.9\% of trips per group and period). Trips are summed per pickup zone $\times$ drop-off group $\times$ date $\times$ time band, medians over every trip and empty combinations kept as 0: 5,940,320~$\times$~14 rows holding all 694 million cleaned trips, in \texttt{trip\_summary.parquet}.
 \end{itemize}
 
-\textbf{External data.} The MTA list of tolled zones \cite{mtacbdzones} joins to the TLC zone lookup on zone ID, carrying each zone's distance to the tolled area from the TLC shapefile \cite{tlczones}: 265~$\times$~8. Zones within 1\,km form a \emph{ring} (19 zones, 13 across a river), since riders can walk out of the tolled area and drivers can wait at its edge; as controls they would overstate the effect. Any cut-off from 0.94 to 1.05\,km gives the same ring, and the other 206 zones are controls. A trip is \emph{treated} if either end is in the tolled area, otherwise \emph{ring} if either end is in the ring. The 2025 fee column checks that rule, marking the charged trips exactly: the zone rule finds 94--95\% of them for HVFHV, the rest charged for passing through without stopping, which a record holding no route cannot show. NOAA daily Central Park records \cite{noaaghcnd}, 1,096~$\times$~7, lose the station ID and have their one missing snow depth set to 0, and a flag marks the 35 federal holidays of 2023--2025 \cite{opmholidays}; both join on date, taking the table to 5,940,320~$\times$~20.
+\begin{table}[htb]
+    \centering
+    \footnotesize
+    \caption{Preprocessing on the full data: (a) the shape left after each cleaning step; (b) quantiles over every raw trip with a positive time and distance, against each rule's cut-off.}
+    \label{tab:prep}
+    \setlength{\tabcolsep}{4pt}
+    \begin{minipage}[t]{0.55\textwidth}
+        \centering
+        (a) Shape after each step\\[2pt]
+        \begin{tabular}{@{}cl rcr@{}}
+            \toprule
+            Step & Rule & Rows & Cols & Cut (\%) \\
+            \midrule
+            -- & Raw files & 715,550,152 & 24--25 & -- \\
+            1 & One schema & 715,550,152 & 10 & 0.000 \\
+            2 & Pickup month & 715,550,152 & 10 & 0.000 \\
+            3 & Drop-off order & 715,519,470 & 10 & 0.004 \\
+            4 & Driver pay $>0$ & 714,346,062 & 10 & 0.164 \\
+            5 & Four outlier caps & 714,221,778 & 10 & 0.017 \\
+            6 & Known ends & 694,437,031 & 10 & 2.765 \\
+            \bottomrule
+        \end{tabular}
+    \end{minipage}%
+    \begin{minipage}[t]{0.45\textwidth}
+        \centering
+        (b) Raw quantiles and cut-offs\\[2pt]
+        \begin{tabular}{@{}l rrrr@{}}
+            \toprule
+            & Length & Dist. & Speed & Pay \\
+            & (min) & (mi) & (mph) & (\$) \\
+            \midrule
+            Median & 16.2 & 3.05 & 11.6 & 15.25 \\
+            Upper quartile & 25.7 & 6.35 & 16.6 & 25.50 \\
+            99.9th pct & 107.4 & 53.50 & 47.2 & 151.50 \\
+            \addlinespace
+            Cut-off & 1--300 & 100 & 60 & 500 \\
+            \bottomrule
+        \end{tabular}
+    \end{minipage}
+\end{table}
 
-\textbf{Does cleaning bias the comparison?} A rule biases it only by removing a larger share from one group after the toll, and the shares are flat: no treated row is removed for an unknown end, and the one rule that separates the groups takes 2.18\% of ring rows in 2024 against 2.38\% in 2025, on trips that are neither treated nor control. Cleaning cannot account for more than a fraction of a point of the gaps below.
+\textbf{External data.} The MTA list of tolled zones \cite{mtacbdzones} joins to the TLC zone lookup on zone ID, carrying each zone's distance to the tolled area from the TLC shapefile \cite{tlczones}: 265~$\times$~8. Zones within 1\,km form a \emph{ring} (19 zones, 13 across a river), since riders can walk out of the tolled area and drivers can wait at its edge; as controls they would overstate the effect. Any cut-off from 0.94 to 1.05\,km gives the same ring, and the other 206 zones are controls. A trip is \emph{treated} if either end is in the tolled area, otherwise \emph{ring} if either end is in the ring. The 2025 fee column checks that rule, finding 93.9--94.8\% of the charged trips; the rest are charged for passing through, which a record holding no route cannot show. NOAA records \cite{noaaghcnd} lose the station ID, leaving 1,096~$\times$~6, and have their one missing snow depth set to 0; a flag marks the 35 federal holidays \cite{opmholidays}. Both join on date, taking the table to 5,940,320~$\times$~20.
+
+\textbf{Does cleaning bias the comparison?} A rule biases it only by removing a larger share from one group after the toll, and the shares are flat: no treated row is removed for an unknown end, and the one rule that separates the groups takes 2.18\% of ring rows in 2024 against 2.38\% in 2025, on trips neither treated nor control. Cleaning cannot account for more than a fraction of a point of any gap below.
 
 \section{Analysis and Geospatial Visualisation}
 \label{sec:analysis}
-Every comparison below sets the toll period, 5 January to 31 December 2025, against the same dates of 2024, so both windows hold the same seasons; the four pre-toll days of January 2025 are dropped, and percentages are changes between those windows unless stated otherwise. The 38 zones the toll applies to are the \emph{tolled zone} throughout, which the figures label CBD after the MTA's own name \cite{mtacbdzones}.
+Every comparison below sets the toll period, 5 January to 31 December 2025, against the same dates of 2024, so both windows hold the same seasons; the four pre-toll days of January 2025 are dropped, and percentages are changes between those windows unless stated otherwise. The 38 zones the toll applies to are the \emph{tolled zone} throughout, labelled CBD in the figures after the MTA's own name \cite{mtacbdzones}.
 
-\textbf{Distributions, missing values and outliers.} All five attributes were binned over every raw row and again over every cleaned trip, across the full data. All are right skewed, the upper quartile running 1.4 to 2 times the median and the 99.9th percentile 4 to 17 times it, so every earnings figure below is a median; the typical trip is short and cheap, 16.2 minutes and \$15.25 of driver pay. Cleaning cuts the tails and leaves the body alone: each curve peaks in the same bin before and after, and what goes is the pile in the end bins, under 1\% of raw rows at either extreme%
-    % CHECK: confirm this share against the HVFHV-only run before submitting
-     and too small to move a median, and impossible readings in any case since every cut-off sits above the matching 99.9th percentile. Nothing in the taxi data is imputed (Section~\ref{sec:taxidata}).
+\textbf{Distributions, missing values and outliers.} Trip length, distance, speed and driver pay were binned over every raw row, and trip length, driver pay and pay per engaged hour again over every cleaned trip, across the full data. Table~\ref{tab:prep}(b) reads the raw quantiles off those histograms. All are right skewed, the upper quartile 1.4 to 2.1 times the median and the 99.9th percentile 4 to 18 times it, so every earnings figure below is a median; the typical trip is short and cheap, 16.2 minutes and \$15.25 of driver pay. Every cut-off sits well clear of the 99.9th percentile beside it, so cleaning cuts the tails and leaves the body alone. Each curve peaks in the same bin before and after, and what goes is the pile in the end bins: 0.02\% of raw rows at the top of the per-hour histogram and 0.001\% at the bottom. Nothing is imputed (Section~\ref{sec:taxidata}).
 
 \subsection{Where the trips were lost, and what happened to earnings}
 \label{sec:zonemap}
-Dividing each month's treated trips by the same month's control trips cancels the seasons, holidays and citywide shocks that hit both groups. Indexed to the 2024 average, HVFHV treated trips average 91.9 in 2025, down from 100: about 227,000 a day touched the zone before the toll and 219,000 after, and they did not reappear at its edge, ring trips being flat beside the zone ($+0.1\%$) and up 2.7\% across the water against $+5.4\%$ in the far control zones. But the ratio was already sliding from 107.9 in 2023, so part of the fall is a trend the toll did not cause, which Section~\ref{sec:modelling} must test month by month. Figure~\ref{fig:zones} maps each pickup zone's change in HVFHV pickups, greying out zones under 10 pickups a day in 2024, since chance alone moves a count that small by roughly 2\%; 256 of 263 zones clear the bar.
+Dividing each month's treated trips by the same month's control trips cancels the seasons, holidays and citywide shocks that hit both groups. Indexed to the 2024 average, treated trips average 91.9 in 2025, down from 100: about 227,000 a day touched the zone before the toll and 219,000 after. They did not reappear at its edge, ring trips being flat beside the zone ($+0.1\%$) and up 2.7\% across the water against $+5.4\%$ in the far control zones. But the ratio was already sliding from 107.9 in 2023, so part of the fall is a trend the toll did not cause, which Section~\ref{sec:modelling} must test month by month. Figure~\ref{fig:zones} maps each zone's change in pickups, greying out zones under 10 pickups a day in 2024, since chance alone moves a count that small by roughly 2\%; 256 of 263 zones clear the bar.
 
 \begin{figure}[htb]
     \centering
-    \includegraphics[width=0.76\textwidth]{fig2_zone_map.pdf}
+    \includegraphics[width=0.68\textwidth]{fig2_zone_map.pdf}
     \caption{Change in HVFHV pickups by pickup zone, toll period against the same dates of 2024.}
     \label{fig:zones}
 \end{figure}
 
-From Figure~\ref{fig:zones} we see pickups falling in almost every zone inside the tolled zone (median $-4.3\%$) and just north of it ($-3.8\%$), while growing across the outer boroughs ($+5.9\%$). All but three of the ten largest falls are inside it and mostly residential, led by Alphabet City ($-10.1\%$) and Stuy Town/Peter Cooper Village ($-10.0\%$). The lost rides therefore started in the zone's residential blocks, which fits short trips, where a flat \$1.50 weighs most and a walk or the subway replaces the ride most easily; trip length by zone is unmeasured, so this is a reading of the map and the question stays open.
+From Figure~\ref{fig:zones} we see pickups falling in almost every zone inside the tolled zone (median $-4.3\%$) and just north of it ($-3.8\%$), while growing across the outer boroughs ($+5.9\%$). All but three of the ten largest falls are inside it and mostly residential, led by Alphabet City ($-10.1\%$) and Stuy Town/Peter Cooper Village ($-10.0\%$). The lost rides therefore started in the zone's residential blocks, which fits short trips, where \$1.50 weighs most and a walk or the subway replaces the ride most easily; trip length by zone is unmeasured, so this is a reading of the map and the question stays open.
 
 \begin{wrapfigure}[16]{l}{0.44\textwidth}
     \vspace{-0.9\baselineskip}
@@ -118,26 +170,24 @@ From Figure~\ref{fig:zones} we see pickups falling in almost every zone inside t
     \vspace{-1.2\baselineskip}
 \end{wrapfigure}
 
-Earnings ran the other way. Figure~\ref{fig:scatter} puts each zone's change in pickups against its change in median earnings per engaged hour. All 38 zones inside gained, by 3.0 to 5.6\% an hour against 1.7\% in the median far control zone, and 33 of them lost pickups while doing it; across all 256 zones the two pull against each other (Spearman $\rho = -0.56$), with the tolled zone alone in the top left corner: fewer rides, better paid rides. On the 2024 base of \$54.65 an hour in the median zone inside, that 4.1\% is about \$2.20 an hour. The gain tracks the loss only weakly within the zone, pointing to something acting on every trip rather than on the lost ones, and the trips name the candidate: across all 464 million HVFHV trips picked up in the three groups, the median trip from a tolled zone ran 2.1\% faster after the toll and covered 2.9\% more ground in the same 18.3 minutes, while control pickups went 1.4\% slower over 2.7\% less ground. An engaged hour inside the zone buys more distance, and distance is what the fare pays for.
-
-Two things cut across that. Queensbridge/Ravenswood, a ring zone one bridge from Midtown, took 18.9\% more pickups while the zone across the river lost them, so the loss stopped at the water. And the wait from request to pickup got shorter inside the zone and longer outside it (3.80 to 3.76 minutes treated, 4.09 to 4.20 control), pointing to more idle drivers per rider: a driver may take fewer rides per hour online even as each engaged hour pays better, which the trip records, holding no row for an empty cab, cannot settle.
+Earnings ran the other way. Figure~\ref{fig:scatter} puts each zone's change in pickups against its change in median earnings per engaged hour. All 38 zones inside gained, by 3.0 to 5.6\% an hour against 1.7\% in the median far control zone, and 33 of them lost pickups while doing it; across all 256 zones the two pull against each other (Spearman $\rho = -0.56$), with the tolled zone alone in the top left corner: fewer rides, better paid rides. Within the zone the gain barely tracks the loss, so whatever raised the rate acted on every trip and not only on the ones that went. The trips say what it was. Across all 464 million trips picked up in the three groups, the median trip from a tolled zone ran 2.1\% faster after the toll and covered 2.9\% more ground in the same 18.3 minutes, while control pickups went 1.4\% slower over 2.7\% less ground. An engaged hour inside the zone buys more distance, and distance is what the fare pays for.
 
 \subsection{When the trips were lost}
-Panel (a) of Figure~\ref{fig:bandday} gives the change in treated trips by time band and day of week; panel (b) divides that by the change in control trips, so $-8$ means treated trips ended 8\% below where the control group's change alone would have put them.
+Figure~\ref{fig:bandday}(a) gives the change in treated trips by time band and day; panel (b) divides it by the change in control trips, so $-8$ means treated trips ended 8\% below where the control group's change alone would have put them.
 
 \begin{figure}[htb]
     \centering
-    \includegraphics[width=0.94\textwidth]{fig4_band_day.pdf}
+    \includegraphics[width=0.84\textwidth]{fig4_band_day.pdf}
     \caption{Change in HVFHV treated trips by time band and day: alone (a) and relative to control (b).}
     \label{fig:bandday}
 \end{figure}
 
-From Figure~\ref{fig:bandday}(b) we see treated trips falling against control in all 28 cells, by 5 to 11\%, so the loss is confined neither to a rush hour nor to weekdays. The gap is widest overnight ($-7$ to $-11\%$) and at weekends ($-8$ to $-11\%$ outside the evening), narrowest on weekday mornings ($-5$ to $-6\%$), and panel (a) says where that comes from: Monday to Thursday mornings and middays hardly moved ($-1$ to $+2\%$), while overnight and weekend trips fell 3 to 10\%. What the toll removed therefore looks like discretionary travel, a rider due at work at 8am having to be in the zone while a midnight trip stays optional, and \$1.50 being a larger share of a cheap off-peak fare. A time-band model should then find its largest effect overnight.
+From Figure~\ref{fig:bandday}(b) we see treated trips falling against control in all 28 cells, by 5 to 11\%, so the loss is confined neither to a rush hour nor to weekdays. The gap is widest overnight ($-6.8$ to $-11.1\%$) and at weekends ($-8$ to $-11\%$ outside the evening), narrowest on weekday mornings ($-5$ to $-6\%$), and panel (a) says where that comes from: Monday to Thursday mornings and middays hardly moved ($-0.8$ to $+2.4\%$), while overnight and weekend trips fell 3 to 10\%. What the toll removed therefore looks like discretionary travel: a rider due at work at 8am has to be in the zone while a midnight trip stays optional, and \$1.50 is a larger share of a cheap off-peak fare. A time-band model should then find its largest effect overnight.
 
 
 \section{Modelling}
 \label{sec:modelling}
-Section~\ref{sec:analysis} left two questions open: whether the fall in trips is the toll or a slide already under way, and whether the earnings gain survives controls for weather, season and each zone's habits. Both models are fitted to the joined table of Section~\ref{sec:preprocessing} (5,940,320~$\times$~20) and report the change in trips touching the tolled zone \emph{relative to control trips} after 5 January 2025, in percent. The outcomes are a cell's trip count, which has many zeros, and its median earnings per engaged hour, right skewed and so modelled in logs. Pickup zone, drop-off group, time band, day of week and month enter as categorical, the five weather columns as continuous and the holiday flag as 0 or 1; nothing is subsampled.
+Section~\ref{sec:analysis} left two questions open: whether the fall in trips is the toll or a slide already under way, and whether the earnings gain survives controls for weather, season and each zone's habits. Both models are fitted to the joined table of Section~\ref{sec:preprocessing} (5,940,320~$\times$~20) and report the change in trips touching the tolled zone \emph{relative to control trips} after 5 January 2025, in percent. The outcomes are a cell's trip count, which has many zeros, and its median earnings per engaged hour, right skewed and so modelled in logs. Pickup zone, drop-off group, time band, day and month enter as categorical, the five weather columns as continuous and the holiday flag as 0 or 1.
 
 \subsection{Model 1: difference-in-differences}
 Trips touching the tolled zone are compared with control trips before and after the toll, so that anything hitting the whole city cancels \cite{angrist2009}. Ring trips are held out of the control group, each ring half carrying its own after-toll term, which measures the spillover on its own.
@@ -145,29 +195,29 @@ Trips touching the tolled zone are compared with control trips before and after 
 \begin{itemize}[leftmargin=*, itemsep=1pt, topsep=2pt]
     \item \textbf{Trips:} a Poisson regression of trips per cell (pickup zone $\times$ drop-off group $\times$ date $\times$ time band), chosen over log-linear OLS because a cell with no trips is common and $\log 0$ is undefined.
     \item \textbf{Earnings:} OLS on the log of the cell's median earnings per engaged hour, weighted by its trips with known earnings, so a one-trip cell does not weigh as much as a thousand-trip one.
-    \item \textbf{Fixed effects} for each pickup zone $\times$ drop-off group $\times$ time band, absorbing the trip group and every cell's usual level, and for each date $\times$ time band, absorbing the after-toll flag, day of week, holidays and citywide weather; \textbf{weather} also enters interacted with the treated group, in case it moves demand inside the zone differently, and \textbf{errors are clustered by pickup zone}, days from one zone being correlated \cite{bertrand2004}.
+    \item \textbf{Fixed effects} for each pickup zone $\times$ drop-off group $\times$ time band, absorbing the trip group and every cell's usual level, and for each date $\times$ time band, absorbing the after-toll flag, day of week, holidays and citywide weather. \textbf{Weather} also enters interacted with the treated group, in case it moves demand inside the zone differently, and \textbf{errors are clustered by pickup zone}, days from one zone being correlated \cite{bertrand2004}.
 \end{itemize}
 
-The design assumes the two groups would have moved together without the toll (tested in Section~\ref{sec:trend}) and that control trips are untouched by it (tested by dropping the buffer band); the clustered errors make the Poisson fit robust to over-dispersion. Fitted with pyfixest \cite{pyfixest} on 5.86M rows for trips and 5.15M for earnings, the headline HVFHV fit puts treated trips at $-10.8\%$ and earnings per engaged hour at $+2.2\%$ ($+1.9$ to $+2.5$); only the Manhattan half of the ring lost trips, and pooling the halves would give $-2.6\%$ and bury that difference.
+The design assumes the two groups would have moved together without the toll (tested in Section~\ref{sec:trend}) and that control trips are untouched by it (tested by dropping the buffer band); the clustered errors make the Poisson fit robust to over-dispersion. Fitted with pyfixest \cite{pyfixest} on 5.86M rows for trips and 5.15M for earnings, the headline puts treated trips at $-10.8\%$ and earnings per engaged hour at $+2.2\%$ ($+1.9$ to $+2.5$). Only the Manhattan half of the ring lost trips, and pooling the halves would give $-2.6\%$ and bury that difference.
 
 \subsection{Is it the toll, or the trend it was already on?}
 \label{sec:trend}
 
-Refitting the trips model with a term for every month shows that the two groups were not moving together before the toll. For HVFHV treated trips, every month of 2024 sits 5.8 to 10.7 points below the same month of 2023, and every month of 2025 sits 3.4 to 11.4 points below 2024 (means 8.2 and 8.6). The toll year's fall is about the size of the fall in the year before it, so parallel trends fails and the headline $-10.8\%$ is reading a slide that began well before January 2025.
+Refitting the trips model with a term for every month shows that the two groups were not moving together before the toll. Every month of 2024 sits 5.8 to 10.7 points below the same month of 2023, and every month of 2025 sits 3.4 to 11.4 points below 2024 (means 8.2 and 8.6). The toll year's fall is about the size of the fall in the year before it, so parallel trends fails and the headline $-10.8\%$ is reading a slide that began well before January 2025.
 
-Table~\ref{tab:models} puts a number on how much of the headline is trend. A placebo toll in a year with none finds an ``effect'' of $-6.4\%$ and the treated group's own trend runs at $-7.1\%$ a year; once each group carries its own trend the effect falls to $-0.4\%$, an interval covering 0. \textbf{So the toll's own effect on HVFHV trips cannot be distinguished from a decline already under way.} Dropping the buffer band moves the headline by 0.6 points, so nearby control zones hide no larger effect. The earnings result behaves in the opposite way, and that is what makes it believable: its placebo is $-0.3\%$ ($-0.5$ to $-0.0$), so the model finds nothing in a year with nothing to find, and the estimate holds at $+1.6$ to $+2.4\%$ across every check. On the 2024 median of \$55.26 an hour over treated trips, $+2.2\%$ is about \$1.23 (\$1.07 to \$1.39) for every hour an HVFHV driver spends carrying a passenger on a trip touching the zone.
+Table~\ref{tab:models} puts a number on how much of the headline is trend. A placebo toll in a year with none finds an ``effect'' of $-6.4\%$ and the treated group's own trend runs at $-7.1\%$ a year; once each group carries its own trend the effect falls to $-0.4\%$, an interval covering 0. \textbf{So the toll's own effect on trips cannot be distinguished from a decline already under way.} The earnings result behaves in the opposite way, and that is what makes it believable: its placebo is $-0.3\%$ ($-0.5$ to $-0.0$), so the model finds nothing in a year with nothing to find, and the estimate holds at $+1.6$ to $+2.4\%$ across every check. On the 2024 median of \$55.26 an hour over treated trips, $+2.2\%$ is about \$1.23 (\$1.07 to \$1.39) an engaged hour.
 
 \subsection{Model 2: LightGBM forecast}
 \label{sec:model2}
-Model 1 removes confounders by design and needs parallel trends to do it. Model 2 drops that assumption for a forecasting question: trained only on what happened before the toll, what would the toll year have looked like? LightGBM \cite{ke2017}, a gradient-boosted ensemble of decision trees, finds interactions such as a zone busy only on weekend nights without them being written in. It takes the inputs above, the calendar year as a number, and each cell's mean level over the \emph{training} rows only, so no later data leaks back. Counts use a Poisson objective and total earnings a Tweedie one, suiting earnings that are 0 in an empty cell and continuous elsewhere; settings stay at defaults, the model's job being to forecast a counterfactual.
+Model 1 removes confounders by design and needs parallel trends to do it. Model 2 drops that assumption for a forecasting question: trained only on what happened before the toll, what would the toll year have looked like? LightGBM \cite{ke2017}, a gradient-boosted ensemble of decision trees, finds interactions such as a zone busy only on weekend nights without them being written in. It takes the inputs above, the calendar year as a number, and each cell's mean level over the \emph{training} rows only, so no later data leaks back. Counts use a Poisson objective and total earnings a Tweedie one, suiting earnings that are 0 in an empty cell and continuous elsewhere; settings stay at defaults.
 
-Validation trains on 2023 and tests on 2024, both before the toll, against a baseline of each cell on the same weekday 52 weeks earlier; for HVFHV the model beats it on every measure (WMAPE 13.7\% against 15.0\% on trips, 17.9\% against 19.3\% on total earnings). The real run refits on 2023--2024, and since the trees cannot read a calendar year past the ones they saw, 2025 is forecast as a year like 2024. That split also gives Model 2 its own placebo, 2024 having held no toll: it puts treated HVFHV trips $-6.5\%$ against control and their total earnings $-4.8\%$. Model 1's placebo is $-6.4\%$, so two methods sharing no assumptions recover the same pre-toll slide, and that is the size any toll-period figure has to clear. SHAP values \cite{lundberg2017} confirm what Model 1's fixed effects assume: a cell's usual level moves the forecasts far more than anything else (2.091), ahead of day of week (0.099), with no weather column above 0.012.
+Validation trains on 2023 and tests on 2024, both before the toll, against a baseline of each cell on the same weekday 52 weeks earlier; the model beats it on every measure (WMAPE 13.7\% against 15.0\% on trips, 17.9\% against 19.3\% on total earnings). The real run refits on 2023--2024, and since the trees cannot read a calendar year past the ones they saw, 2025 is forecast as a year like 2024. That split also gives Model 2 its own placebo, 2024 having held no toll: it puts treated trips $-6.5\%$ against control and their total earnings $-4.8\%$. Model 1's placebo is $-6.4\%$, so two methods sharing no assumptions recover the same pre-toll slide, and that is the size any toll-period figure has to clear. SHAP values \cite{lundberg2017} confirm what Model 1's fixed effects assume: a cell's usual level moves the forecasts far more than anything else (2.091), ahead of day of week (0.099), with no weather column above 0.012.
 
 \subsection{What the two models say together}
 \label{sec:together}
 \begin{table}[htb]
     \centering
-    \small
+    \footnotesize
     \caption{Both models' effects relative to control trips, in percent; Model 2 has no interval.}
     \label{tab:models}
     \setlength{\tabcolsep}{5pt}
@@ -177,37 +227,45 @@ Validation trains on 2023 and tests on 2024, both before the toll, against a bas
         \cmidrule(lr){2-4} \cmidrule(l){5-6}
         Fit or group & \multicolumn{2}{c}{Model 1} & Model 2 & M1, per hour & M2, total \\
         \midrule
-        \multicolumn{6}{@{}l}{\emph{HVFHV treated, all day: headline and checks}} \\
+        \multicolumn{6}{@{}l}{\emph{Treated, all day: headline and checks}} \\
         Headline & $-10.8$ & ($-12.0$, $-9.6$) & $-8.3$ & $+2.2$ & $-3.8$ \\
         Placebo (no toll) & $-6.4$ & ($-7.0$, $-5.7$) & $-6.5$ & $-0.3$ & $-4.8$ \\
         2024--2025 only & $-7.6$ & ($-8.6$, $-6.5$) & & $+2.4$ & \\
         Own linear trends & $-0.4$ & ($-1.3$, $+0.6$) & & $+1.6$ & \\
         Buffer band dropped & $-11.4$ & ($-12.6$, $-10.2$) & & $+2.4$ & \\
         \addlinespace
-        \multicolumn{6}{@{}l}{\emph{HVFHV ring, all day}} \\
+        \multicolumn{6}{@{}l}{\emph{Ring, all day}} \\
         Adjacent & $-6.4$ & ($-8.1$, $-4.7$) & $-4.2$ & $+0.6$ & $-2.3$ \\
         Across water & $-0.7$ & ($-2.5$, $+1.0$) & $-0.9$ & $+1.1$ & $+0.6$ \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-Two models built on opposite principles land in the same place (Table~\ref{tab:models}). Model 2's $-8.3\%$ sits between Model 1's headline ($-10.8\%$) and its 2024--2025 fit ($-7.6\%$), where it should, since forecasting 2025 as a year like 2024 mostly makes the two-year comparison. Neither removes the pre-trend, so both are upper bounds: against each model's own placebo the headline becomes $-4.7\%$ and the forecast $-2.0\%$, both falling towards the $-0.4\%$ own trends give. They agree on timing, putting the largest fall overnight and the smallest in the morning peak, so Figure~\ref{fig:bandday}'s raw pattern holds with weather, season and zone fixed; since the charge is the same \$1.50 at 3am as at 8am, that pattern is about which rider gives up a trip. They agree on spillover, placing the loss on the Manhattan side of the ring and nothing across the water. The earnings columns answer different questions: an hour carrying a passenger pays 2.2\% more (Model 1), while the total those trips bring in sits 3.8\% below control (Model 2) because there are 8.3\% fewer of them, and against Model 2's own no-toll year that total is $+1.1\%$ on 2.0\% fewer trips, a rate moving up as in Model 1.
+Two models built on opposite principles land in the same place (Table~\ref{tab:models}). Model 2's $-8.3\%$ sits between Model 1's headline ($-10.8\%$) and its 2024--2025 fit ($-7.6\%$), where it should, since forecasting 2025 as a year like 2024 mostly makes the two-year comparison. Neither removes the pre-trend, so both are upper bounds: against each model's own placebo the headline becomes $-4.7\%$ and the forecast $-2.0\%$, both falling towards the $-0.4\%$ own trends give. They agree on timing, putting the largest fall overnight and the smallest in the morning peak, so Figure~\ref{fig:bandday}'s raw pattern holds with weather, season and zone fixed. They agree on spillover, placing the loss on the Manhattan side of the ring and nothing across the water. The earnings columns answer different questions: an hour carrying a passenger pays 2.2\% more (Model 1), while the total those trips bring in sits 3.8\% below control (Model 2) because there are 8.3\% fewer of them, and against Model 2's own no-toll year that total is $+1.1\%$ on 2.0\% fewer trips, a rate moving up as in Model 1.
 
 So for a driver the toll landed on the rate of pay, and the amount of work in the zone came through roughly intact. The extra ground a paid trip covered in the same engaged time (Section~\ref{sec:zonemap}) is on its own about the size of the $+2.2\%$ the model finds, since distance is what the fare pays for, and the MTA's speed series \cite{mtacbdspeeds} moves the same way, in the direction of the gains reported after the London and Stockholm schemes \cite{leape2006, eliasson2009} though at a much smaller scale. That mechanism is the weaker leg, being a raw 2025-against-2024 difference with the pre-trend still inside it; the placebo clears that pre-trend out of the earnings estimate itself.
 
-\textbf{Four things bound this.} A trip charged only for passing through the zone counts here as control, which pulls the groups together and shrinks every gap above. The ring is drawn by distance alone, so a control zone behaving like a ring one would escape both the 0.94--1.05\,km stability check and the buffer-band check. The engaged hour is one part of a shift, and waits inside the zone got shorter as trips fell (Section~\ref{sec:zonemap}), so a better-paid hour can sit inside a thinner shift; a Model 2 gap is distance from a prediction, which a zone can cover for reasons the toll had nothing to do with. And only citywide confounders are removed: a change confined to the zone in the same months, such as street or bus-lane work, stays in the estimate. Three patterns nonetheless stay usable whatever happens to the size of the loss, each being a difference \emph{inside} the treated group: it is widest overnight and at weekends, it landed on the residential blocks, and it stopped at the water. Nothing tests whether the pre-toll slide itself ran faster overnight or in Alphabet City, which makes the first two weaker than the third.
+\textbf{Five things bound this.} A trip charged only for passing through the zone counts here as control, which pulls the groups together and shrinks every gap above. The ring is drawn by distance alone, so a control zone behaving like a ring one would escape both the 0.94--1.05\,km stability check and the buffer-band check. The engaged hour is one part of a shift. The wait from request to pickup got shorter inside the zone as trips fell (3.80 to 3.76 minutes, against 4.09 to 4.20 in control), so a better-paid hour can sit inside a thinner shift, and records holding no row for a cab between fares cannot settle that. A Model 2 gap is distance from a prediction, which a zone can cover for reasons the toll had nothing to do with. And only citywide confounders are removed: a change confined to the zone in the same months, such as street or bus-lane work, stays in the estimate. Three patterns nonetheless stay usable whatever happens to the size of the loss, each being a difference \emph{inside} the treated group: it is widest overnight and at weekends, it landed on the residential blocks, and it stopped at the water. Nothing tests whether the pre-toll slide itself ran faster overnight or in Alphabet City, which makes the first two weaker than the third.
 
 \section{Recommendations}
 \label{sec:recommendations}
-The toll moved the pay rate inside the zone and left the amount of work there much as it was, so the advice below covers where and when to spend an engaged hour, taking the decision to work the zone as settled. It reads Model 2's forecast the way a driver would: in this pickup zone and time band, how did the toll year turn out against a forecast year with no toll in it? The zone and time-band figures quoted below come from that refit run out to all 265 zones.
+The advice below covers where and when to spend an engaged hour, taking the decision to work the zone as settled. It reads Model 2's forecast the way a driver would: in this pickup zone and time band, how did the toll year turn out against a forecast year with no toll in it? The zone and time-band figures quoted below come from that refit, run out to all 263 mapped zones.
 
-\textbf{1. Keep the daytime shift inside the zone, where the toll raised the hourly pay.} A driver who reads the headline $-10.8\%$ (Table~\ref{tab:models}) and re-bases to the outer boroughs makes two mistakes: most of that fall predates the toll (Section~\ref{sec:trend}), and the \$1.50 is billed to the rider, so it stays outside driver pay entirely. The rate rose $+2.2\%$ an engaged hour ($+1.9$ to $+2.5$), about \$1.23 on the 2024 median of \$55.26, earned on the road through faster and longer trips. The work is still there: over the morning peak, midday and evening, Midtown Center, Union Sq, Times Sq/Theatre District and TriBeCa/Civic Center held their trip counts within 5\% of forecast and their total earnings 5.0 to 11.4\% above it, level with the control zones on totals. Those are totals, so they leave the $+2.2\%$ rate unmeasured; what they rule out is the zone emptying so far that the better-paid hour is harder to fill. A Manhattan driver working roughly 05:00--21:00 should stay put, since \$1.23 an hour is what a move out of the zone gives up.
+\textbf{1. Keep the daytime shift inside the zone, where the toll raised the hourly pay.} A driver who reads the headline $-10.8\%$ (Table~\ref{tab:models}) and re-bases to the outer boroughs makes two mistakes: most of that fall predates the toll (Section~\ref{sec:trend}), and the \$1.50 is billed to the rider, so it stays outside driver pay entirely. The rate rose $+2.2\%$ an engaged hour ($+1.9$ to $+2.5$), about \$1.23 on the 2024 median of \$55.26, earned on the road through faster and longer trips. The work is still there: over the morning peak, midday and evening the busy tolled zones of Figure~\ref{fig:driver} held their trip counts within 5\% of forecast and their total earnings 5.0 to 11.4\% above it, level with the control zones on totals. Those are totals, so they say nothing about the $+2.2\%$ rate itself. What they rule out is the zone emptying so far that the better-paid hour becomes hard to fill. A Manhattan driver working roughly 05:00--21:00 should stay put; \$1.23 an hour is what a move out of the zone gives up.
 
-\textbf{2. Take the overnight and weekend hours out of the residential half of the zone.} Both models put the largest fall overnight (Model 1 $-11.8\%$, Model 2 $-9.2\%$) and the smallest in the morning peak ($-8.7$ and $-6.2$); neither is fitted by day of week, so the weekend half rests on Figure~\ref{fig:bandday}(b), where the weekend cells reach $-8$ to $-11\%$ against $-5$ to $-6\%$ on weekday mornings. Overnight the loss is concentrated, which is the part a driver can act on: East Chelsea ($-11.2\%$ against forecast) and East Village ($-10.3\%$) sit furthest below, with earnings to match, while Midtown Center holds at $+2.8\%$ trips and $+9.5\%$ earnings and Union Sq at $+1.3$ and $+8.9$. The losing zones are the residential ones, the pattern of the map in Section~\ref{sec:zonemap}: a rider going out at midnight can drop the trip, one due at work at 8am keeps it. An overnight driver should work the hotel and nightlife core around Midtown Center and Union Sq, and give up the residential avenues south of 23rd Street.
+\textbf{2. Take the overnight and weekend hours out of the residential half of the zone.} Both models put the largest fall overnight (Model 1 $-11.8\%$, Model 2 $-9.2\%$) and the smallest in the morning peak ($-8.7$ and $-6.2$); neither is fitted by day of week, so the weekend half rests on Figure~\ref{fig:bandday}(b), where the weekend cells reach $-8$ to $-11\%$ against $-5$ to $-6\%$ on weekday mornings. Overnight the loss is concentrated, which is the part a driver can act on. In Figure~\ref{fig:driver}, East Chelsea ($-11.2\%$ against forecast) and East Village ($-10.3\%$) sit furthest below with earnings to match, and quieter zones off the figure fall further still (Clinton West and Stuy Town/Peter Cooper Village, both $-14.3\%$), while Midtown Center holds at $+2.8\%$ trips and $+9.5\%$ earnings and Union Sq at $+1.3$ and $+8.9$. The losing zones are the residential ones, the pattern of the map in Section~\ref{sec:zonemap}. An overnight driver should work the hotel and nightlife core around Midtown Center and Union Sq, and give up the residential zones on either side of it: East Chelsea and Clinton West to the west, the East Village and Stuy Town/Peter Cooper Village to the east. Section~\ref{sec:together} calls these the weaker two patterns, but the advice does not need the toll to have caused them. Measured against a forecast of the same year, it says where the rides are now, and that is what the choice of a shift turns on.
+
+
+\begin{figure}[htb]
+    \centering
+    \includegraphics[width=0.90\textwidth]{fig6_driver_heatmap.pdf}
+    \caption{The toll period against Model 2's no-toll forecast, for the 15 busiest pickup zones. Zone names are coloured by group: \textcolor{cbdblue}{\textbf{tolled zone}}, \textcolor{ringorange}{\textbf{ring}}, \textcolor{controlgrey}{\textbf{control}}.}
+    \label{fig:driver}
+\end{figure}
 
 
 \section{Conclusion}
-Measured over every HVFHV trip of 2023 to 2025, the work inside the zone came through the toll roughly intact, the headline $-10.8\%$ being mostly a decline already under way; what the toll moved is the rate of pay, up 2.2\% an engaged hour and holding across every check. Every result here is about the engaged hour, so records covering a whole shift are what further work needs first, and another year would show whether the pre-toll slide of roughly 7\% a year continues, the bar any later estimate has to clear.
+Measured over every HVFHV trip of 2023 to 2025, the work inside the zone came through the toll roughly intact, the headline $-10.8\%$ being mostly a decline already under way; what the toll moved is the rate of pay, up 2.2\% an engaged hour and holding across every check. Every result here is about the engaged hour, so records covering a whole shift are what further work needs first, and another year would show whether the pre-toll slide of roughly 7\% a year continues.
 
 \clearpage
 

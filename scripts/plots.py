@@ -4,6 +4,7 @@ Every figure uses ``scripts/style.mplstyle``, which the notebook loads once in
 its setup cell.
 """
 
+import logging
 import re
 
 import geopandas as gpd
@@ -18,6 +19,10 @@ from IPython.display import HTML
 from matplotlib import cm, colors
 
 from scripts import config
+
+# Saving a PDF subsets its fonts through fontTools, which logs an INFO
+# line per font into the notebook output. Only warnings are useful here
+logging.getLogger("fontTools").setLevel(logging.WARNING)
 
 # Service name on every figure and table
 SERVICE_NAMES = {"fhvhv": "High Volume For-Hire Vehicle"}
@@ -401,7 +406,10 @@ def relative_trips(table, toll_date):
         ax.axvline(pd.Timestamp(toll_date), color="black", linestyle="--",
                    linewidth=0.8)
         ax.axhline(100, color="#8a8983", linewidth=0.6)
-        ax.set_title(SERVICE_NAMES[service])
+        # One service in the project, so the panel says what it shows; a
+        # second service would need its name back here to tell the panels apart
+        ax.set_title("Trips relative to control" if len(services) == 1
+                     else SERVICE_NAMES[service])
         ax.xaxis.set_major_locator(mdates.YearLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
     axes[0][0].set_ylabel("Trips relative to control\n(2024 average = 100)")
@@ -845,7 +853,7 @@ def monthly_lines(table, ylabel, title, toll_date):
 # Section 6: models
 # ---------------------------------------------------------------------------
 def event_study(tables, toll_date):
-    """Figure 4: monthly toll effects with 95% intervals, one panel per
+    """Figure 5: monthly toll effects with 95% intervals, one panel per
     service.
 
     Args:
@@ -855,8 +863,12 @@ def event_study(tables, toll_date):
     Returns:
         matplotlib.figure.Figure: The figure.
     """
+    # One panel takes the full text width the style file assumes. Any
+    # narrower and the legend, which is wider than one narrow panel, sets
+    # the saved width (``savefig.bbox: tight``) and leaves the panel
+    # adrift in a canvas a third wider than itself.
     fig, axes = plt.subplots(1, len(tables),
-                             figsize=(min(6.5, 3.5 * len(tables)), 3.4),
+                             figsize=(6.5, 3.4),
                              sharex=True, layout="constrained",
                              squeeze=False)
     for ax, (service, table) in zip(axes[0], tables.items()):
@@ -870,7 +882,9 @@ def event_study(tables, toll_date):
         ax.axvline(pd.Timestamp(toll_date), color="black", linestyle="--",
                    linewidth=0.8)
         ax.axhline(0, color="#8a8983", linewidth=0.6)
-        ax.set_title(SERVICE_NAMES[service])
+        # As in relative_trips: the service name only told panels apart
+        ax.set_title("Monthly toll effect with 95% intervals"
+                     if len(tables) == 1 else SERVICE_NAMES[service])
         ax.xaxis.set_major_locator(mdates.YearLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
     axes[0][0].set_ylabel("Trips against control (%),\n"
@@ -885,12 +899,11 @@ def event_study(tables, toll_date):
 # ---------------------------------------------------------------------------
 # The time bands on one line, for the narrow columns of a zone heatmap,
 # where the two-line ``BAND_NAMES`` are wider than a column
-SHORT_BAND_NAMES = {"overnight": "Overnight 21-05",
-                    "morning_peak": "Morning 05-10",
-                    "midday": "Midday 10-16", "evening": "Evening 16-21"}
+SHORT_BAND_NAMES = {"overnight": "21-05", "morning_peak": "05-10",
+                    "midday": "10-16", "evening": "16-21"}
 
 
-def driver_heatmap(table, columns, titles, limit, label, row_height=0.28):
+def driver_heatmap(table, columns, titles, limit, label, row_height=0.21):
     """Figure 6: pickup zone (rows) against time band (columns).
 
     One panel per value column, on one colour scale, so a reader can hold
@@ -907,7 +920,9 @@ def driver_heatmap(table, columns, titles, limit, label, row_height=0.28):
         titles (list of str): Panel titles.
         limit (float or tuple): Colour scale, as in ``_panel_scale``.
         label (str): Colour bar label.
-        row_height (float): Height of one zone's row in inches.
+        row_height (float): Height of one zone's row in inches. The
+            default is set to the report's page budget, not to the cell
+            font size, which stays at 8.5pt whatever the row height.
 
     Returns:
         matplotlib.figure.Figure: The figure.
@@ -918,19 +933,19 @@ def driver_heatmap(table, columns, titles, limit, label, row_height=0.28):
     norm, colormap, extend = _panel_scale(limit)
 
     fig, axes = plt.subplots(1, len(columns), sharey=True, squeeze=False,
-                             figsize=(6.5, row_height * len(zones) + 1.6),
+                             figsize=(6.5, row_height * len(zones) + 0.7),
                              layout="constrained")
     for ax, column, title in zip(axes[0], columns, titles):
         grid = table.pivot(index="PULocationID", columns="time_band",
                            values=column).reindex(index=zones, columns=bands)
         _heatmap_cells(ax, grid.to_numpy(dtype=float), norm, colormap,
                        fontsize=8.5)
-        # The names are wider than a column, so they lean out of each
-        # other's way rather than shrinking below the report's font size
+        # Hour ranges alone fit a column upright, which costs the
+        # figure about an inch less height than rotated band names
         ax.set_xticks(range(len(bands)),
                       [SHORT_BAND_NAMES.get(b, b) for b in bands],
-                      fontsize=8, rotation=30, ha="right",
-                      rotation_mode="anchor")
+                      fontsize=8)
+        ax.set_xlabel("Pickup hour", fontsize=8.5)
         ax.set_title(title, fontsize=10)
 
     axes[0][0].set_yticks(range(len(zones)),
@@ -944,8 +959,4 @@ def driver_heatmap(table, columns, titles, limit, label, row_height=0.28):
                        pad=0.02)
     bar.set_label(label)
     bar.outline.set_visible(False)
-    fig.legend(handles=[mpatches.Patch(color=colour,
-                                       label=ZONE_GROUP_NAMES[group])
-                        for group, colour in ZONE_COLOURS.items()],
-               loc="outside lower center", ncols=3, title="Pickup zone is in")
     return fig

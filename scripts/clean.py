@@ -62,20 +62,13 @@ TRIP_COARSE = {"treated": "treated", "ring_adjacent": "ring",
                "control_far": "control"}
 COARSE_TRIP_GROUPS = ["treated", "ring", "control"]
 
+# The HVFHV columns the rules below read, named once here
+DISTANCE_COLUMN = "trip_miles"
+VENDOR_COLUMN = "hvfhs_license_num"
+MONEY_COLUMN = "driver_pay"  # driver pay after commission, excluding tips
+
 SUMMARY_FILE = config.CURATED_DIR / "trip_summary.parquet"
 PARTS_DIR = config.CURATED_DIR / "summary_parts"
-
-
-def _distance(service):
-    return "trip_miles"
-
-
-def _vendor(service):
-    return "hvfhs_license_num"
-
-
-def _money(service):
-    return "driver_pay"
 
 
 def _zone_groups(labels):
@@ -111,7 +104,7 @@ def add_trip_time(data, service):
             .withColumn("trip_seconds", seconds)
             .withColumn("trip_hours", F.col("trip_seconds") / 3600)
             # Null instead of an error for zero-length trips
-            .withColumn("speed_mph", F.try_divide(F.col(_distance(service)),
+            .withColumn("speed_mph", F.try_divide(F.col(DISTANCE_COLUMN),
                                                   F.col("trip_hours"))))
 
 
@@ -126,7 +119,7 @@ def null_counts(data, service):
         pandas.DataFrame: One row per group with ``rows`` and a null count
         per column.
     """
-    keys = ["file_month", _vendor(service)]
+    keys = ["file_month", VENDOR_COLUMN]
     counted = [c for c in COLUMNS[service] if c not in keys]
     table = data.groupBy(keys).agg(
         F.count("*").alias("rows"),
@@ -253,7 +246,8 @@ def distribution_quantiles(data, service):
 
     Args:
         data (pyspark.sql.DataFrame): Trips with ``add_trip_time`` columns.
-        service (str): ``"fhvhv"``.
+        service (str): ``"fhvhv"``. Unused, so that every step in this
+            module takes the same pair.
 
     Returns:
         pandas.DataFrame: Rows are quantiles, columns are variables.
@@ -261,12 +255,12 @@ def distribution_quantiles(data, service):
     # column: (start, stop, bin width)
     bins = {
         "trip_minutes": (0, 360, 0.1),
-        _distance(service): (0, 100, 0.05),
+        DISTANCE_COLUMN: (0, 100, 0.05),
         "speed_mph": (0, 100, 0.1),
-        _money(service): (-50, 500, 0.25),
+        MONEY_COLUMN: (-50, 500, 0.25),
     }
     data = (data.where((F.col("trip_seconds") > 0)
-                       & (F.col(_distance(service)) > 0))
+                       & (F.col(DISTANCE_COLUMN) > 0))
             .withColumn("trip_minutes", F.col("trip_seconds") / 60))
     probs = [0.001, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 0.999]
     table = pd.DataFrame(index=pd.Index(probs, name="quantile"))
@@ -329,7 +323,7 @@ def rules(service):
         list of tuple: (str, str, pyspark.sql.Column).
     """
     pickup, dropoff = TIME_COLUMNS[service]
-    distance, money = _distance(service), _money(service)
+    distance, money = DISTANCE_COLUMN, MONEY_COLUMN
     in_file_month = (F.trunc(F.to_date(pickup), "month")
                      == F.col("file_month"))
     labels = zones.load_zone_labels()
@@ -479,7 +473,7 @@ def add_columns(data, service, spark, labels):
     pickup = TIME_COLUMNS[service][0]
     # A zero distance means the meter didn't measure the trip, so its fare
     # or pay can't be trusted either. The trip still counts
-    measured = F.col(_distance(service)) > 0
+    measured = F.col(DISTANCE_COLUMN) > 0
     data = data.withColumn("earnings", F.when(measured, F.col("driver_pay")))
     shared = F.col("shared_match_flag") == "Y"
 

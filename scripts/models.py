@@ -230,7 +230,7 @@ def did_checks(data):
 
 
 def event_study(table, service):
-    """Month-by-month toll effects on trips (Figure 4).
+    """Month-by-month toll effects on trips (``plots.event_study``).
 
     One Poisson regression with a treated x month, ring_adjacent x month
     and ring_across x month term for every month but the last one before

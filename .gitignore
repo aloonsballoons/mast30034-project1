@@ -27,6 +27,8 @@ report/*.out
 report/*.run.xml
 report/*.synctex.gz
 report/*.toc
+# biber leaves this behind when it cannot write the .bbl
+report/*.bbl-SAVE-ERROR
 
 # macOS and editors
 .DS_Store
